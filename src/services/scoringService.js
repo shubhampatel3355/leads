@@ -59,54 +59,29 @@ function calculateFitScore(lead) {
 // ─── Intent Scoring ───────────────────────────────────────────
 
 /**
- * Map AI analysis output to a numeric intent score.
- * Blueprint mapping:
- *   Buying Intent: high → +40, medium → +20, low → +5
- *   Timeline: immediate → +25, 1-3 months → +15, 3-6 months → +5
- *   Budget: strong → +20, moderate → +10, weak → +3
- *   Decision Authority: yes → +15, influencer → +5
+ * Provide the numeric intent score directly from the AI analysis.
+ * The AI uses a 120-point framework.
  */
 function calculateIntentScore(analysis) {
-    let score = 0;
-
-    // Buying Intent
-    const intentMap = { high: 40, medium: 20, low: 5, none: 0 };
-    score += intentMap[analysis.buying_intent] || 0;
-
-    // Timeline
-    const timelineMap = { immediate: 25, '1-3_months': 15, '3-6_months': 5, no_timeline: 0 };
-    score += timelineMap[analysis.timeline] || 0;
-
-    // Budget (accept both budget_signal and budget_indication for compatibility)
-    const budgetMap = { strong: 20, moderate: 10, weak: 3, none: 0 };
-    const budgetValue = analysis.budget_signal || analysis.budget_indication;
-    score += budgetMap[budgetValue] || 0;
-
-    // Decision Authority (accept both decision_maker and decision_authority)
-    const authMap = { yes: 15, influencer: 5, no: 0, unknown: 0 };
-    const authValue = analysis.decision_maker || analysis.decision_authority;
-    score += authMap[authValue] || 0;
-
-    return Math.min(score, 100); // Cap at 100
+    return Number(analysis.total_score) || 0;
 }
 
 // ─── Final Score & Classification ─────────────────────────────
 
 /**
  * Calculate final score and determine classification.
- * final_score = fit_score + intent_score
- * Classification: 70+ → hot, 40-69 → warm, <40 → cold
+ * Honors the AI's exact classification if available (honoring its strict Hot Lead Rules).
  */
-function calculateFinalScore(fitScore, intentScore) {
+function calculateFinalScore(fitScore, intentScore, aiAnalysis) {
     const finalScore = fitScore + intentScore;
 
-    let classification;
-    if (finalScore >= 70) {
-        classification = 'hot';
-    } else if (finalScore >= 40) {
-        classification = 'warm';
+    let classification = 'cold';
+    if (aiAnalysis && aiAnalysis.classification) {
+        classification = aiAnalysis.classification.toLowerCase();
     } else {
-        classification = 'cold';
+        // Fallback for leads with no AI history
+        if (finalScore >= 70) classification = 'hot';
+        else if (finalScore >= 40) classification = 'warm';
     }
 
     return { finalScore, classification };
@@ -118,7 +93,7 @@ function calculateFinalScore(fitScore, intentScore) {
 function fullScore(lead, aiAnalysis) {
     const fitScore = calculateFitScore(lead);
     const intentScore = aiAnalysis ? calculateIntentScore(aiAnalysis) : 0;
-    const { finalScore, classification } = calculateFinalScore(fitScore, intentScore);
+    const { finalScore, classification } = calculateFinalScore(fitScore, intentScore, aiAnalysis);
 
     logger.debug(`Scored lead ${lead.id}: fit=${fitScore} intent=${intentScore} final=${finalScore} → ${classification}`);
 

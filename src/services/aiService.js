@@ -35,20 +35,19 @@ function getClient() {
 
 // ─── Required Fields ──────────────────────────────────────────────
 const REQUIRED_FIELDS = [
-    'buying_intent',
-    'timeline',
-    'budget_signal',
-    'decision_maker',
-    'sentiment',
-    'recommended_action',
+    'intent_score',
+    'timeline_score',
+    'budget_score',
+    'authority_score',
+    'pain_score',
+    'total_score',
+    'classification',
+    'recommended_next_step',
+    'summary',
 ];
 
 const VALID_VALUES = {
-    buying_intent: ['high', 'medium', 'low', 'none'],
-    timeline: ['immediate', '1-3_months', '3-6_months', 'no_timeline'],
-    budget_signal: ['strong', 'moderate', 'weak', 'none'],
-    decision_maker: ['yes', 'influencer', 'no', 'unknown'],
-    sentiment: ['positive', 'neutral', 'negative'],
+    classification: ['hot', 'warm', 'cold'],
 };
 
 // ─── Core API Call ────────────────────────────────────────────────
@@ -153,13 +152,14 @@ function validateAnalysis(analysis) {
 
 function getDefaultAnalysis() {
     return {
-        buying_intent: 'low',
-        timeline: 'no_timeline',
-        budget_signal: 'none',
-        decision_maker: 'unknown',
-        sentiment: 'neutral',
-        recommended_action: 'Manual review required — AI analysis was inconclusive.',
-        key_signals: [],
+        intent_score: 0,
+        timeline_score: 0,
+        budget_score: 0,
+        authority_score: 0,
+        pain_score: 0,
+        total_score: 0,
+        classification: 'cold',
+        recommended_next_step: 'Manual review required — AI analysis was inconclusive.',
         summary: 'AI analysis was unable to determine intent. Manual review recommended.',
         _fallback: true,
     };
