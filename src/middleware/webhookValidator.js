@@ -30,9 +30,17 @@ function validateTwilioWebhook(req, res, next) {
     }
 
     // Build the full URL Twilio used to sign the request.
-    // MUST match the webhook URL configured in Twilio console.
-    const webhookBaseUrl = env.twilio.webhookUrl || env.webhookBaseUrl;
-    const url = `${webhookBaseUrl}${req.originalUrl}`;
+    let baseUrl = env.twilio.webhookUrl || env.webhookBaseUrl || `${req.protocol}://${req.headers.host}`;
+    
+    // If the user pasted the full endpoint in .env, strip it down to the base
+    baseUrl = baseUrl.replace(/\/webhook\/whatsapp\/?$/, '');
+
+    // In production behind a proxy like Coolify, force HTTPS to match what Twilio actually hit
+    if (env.nodeEnv === 'production' && baseUrl.startsWith('http://')) {
+        baseUrl = baseUrl.replace('http://', 'https://');
+    }
+
+    const url = `${baseUrl}${req.originalUrl}`;
 
     // Twilio signs over the POST body parameters
     const params = req.body || {};
