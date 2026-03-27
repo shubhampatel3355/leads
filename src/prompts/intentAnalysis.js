@@ -16,6 +16,7 @@ const SYSTEM_PROMPT = [
   '2. Be conservative: if the signal is ambiguous, score it lower rather than higher.',
   '3. Every field listed in the output schema is REQUIRED. Do not omit any.',
   '4. Use ONLY the enum values specified for each field.',
+  '5. CRITICAL: If the prospect responds with ANY positive affirmation to an initial outreach (e.g., "yes", "interested", "sure", "tell me more"), you MUST classify buying_intent as AT LEAST "medium" (or "high") and sentiment as "positive".',
 ].join('\n');
 
 // ─── Output Schema (embedded in the user prompt) ───────────────────
