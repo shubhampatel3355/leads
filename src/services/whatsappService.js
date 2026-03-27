@@ -38,7 +38,7 @@ async function sendMessage(leadId, phone, body) {
         const client = getClient();
 
         // Construct status callback URL if possible
-        const statusCallback = env.twilio.webhookUrl ? `${env.twilio.webhookUrl}/webhook/whatsapp/status` : null;
+        const statusCallback = env.twilio.webhookUrl ? `${env.twilio.webhookUrl.replace(/\/webhook\/whatsapp\/?$/, '')}/webhook/whatsapp/status` : null;
 
         const message = await client.messages.create({
             from: env.twilio.whatsappFrom,
