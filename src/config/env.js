@@ -29,10 +29,10 @@ module.exports = {
         webhookUrl: process.env.TWILIO_WEBHOOK_URL || '',
     },
 
-    openrouter: {
-        apiKey: process.env.OPENROUTER_API_KEY,
-        primaryModel: process.env.OPENROUTER_PRIMARY_MODEL || 'anthropic/claude-sonnet-4',
-        fallbackModel: process.env.OPENROUTER_FALLBACK_MODEL || 'openai/gpt-4o-mini',
+    openai: {
+        apiKey: process.env.OPENAI_API_KEY,
+        primaryModel: process.env.OPENAI_PRIMARY_MODEL || 'gpt-4o',
+        fallbackModel: process.env.OPENAI_FALLBACK_MODEL || 'gpt-4o-mini',
     },
 
     bland: {

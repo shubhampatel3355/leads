@@ -1,14 +1,14 @@
 /**
- * AI Service — production intent analysis via OpenRouter.
+ * AI Service — production intent analysis via OpenAI.
  *
- * Flow: Claude (primary) → GPT-4o-mini (fallback) → conservative defaults.
- * All calls go through OpenRouter's OpenAI-compatible endpoint.
+ * Flow: GPT-4o (primary) → GPT-4o-mini (fallback) → conservative defaults.
+ * All calls go directly to OpenAI.
  *
  * Features:
  *   • 30-second timeout via AbortController
  *   • Token usage logging
  *   • Required-field validation on AI output
- *   • Automatic GPT-4o-mini fallback on Claude failure
+ *   • Automatic GPT-4o-mini fallback on GPT-4o failure
  *   • Robust JSON extraction (direct, code-fence, brace-match)
  */
 
@@ -17,25 +17,20 @@ const env = require('../config/env');
 const logger = require('../utils/logger');
 const { SYSTEM_PROMPT, buildIntentPrompt, buildTranscriptPrompt } = require('../prompts/intentAnalysis');
 
-// ─── OpenRouter Client (singleton) ────────────────────────────────
-let openrouterClient = null;
+// ─── OpenAI Client (singleton) ────────────────────────────────
+let openaiClient = null;
 
 function getClient() {
-    if (!openrouterClient) {
-        if (!env.openrouter.apiKey) {
-            throw new Error('OPENROUTER_API_KEY is not configured');
+    if (!openaiClient) {
+        if (!env.openai.apiKey) {
+            throw new Error('OPENAI_API_KEY is not configured');
         }
-        openrouterClient = new OpenAI({
-            baseURL: 'https://openrouter.ai/api/v1',
-            apiKey: env.openrouter.apiKey,
-            defaultHeaders: {
-                'HTTP-Referer': 'https://leadforge.app',
-                'X-Title': 'LeadForge Intent Engine',
-            },
+        openaiClient = new OpenAI({
+            apiKey: env.openai.apiKey,
         });
-        logger.info('[ai] OpenRouter client initialized');
+        logger.info('[ai] OpenAI client initialized');
     }
-    return openrouterClient;
+    return openaiClient;
 }
 
 // ─── Required Fields ──────────────────────────────────────────────
@@ -59,8 +54,8 @@ const VALID_VALUES = {
 // ─── Core API Call ────────────────────────────────────────────────
 
 /**
- * Call a model via OpenRouter with timeout.
- * @param {string} model   – OpenRouter model identifier
+ * Call a model via OpenAI with timeout.
+ * @param {string} model   – OpenAI model identifier
  * @param {string} prompt  – user prompt content
  * @param {number} timeoutMs – timeout in milliseconds (default 30s)
  * @returns {{ text: string, usage: object, model: string }}
@@ -174,7 +169,7 @@ function getDefaultAnalysis() {
 
 /**
  * Analyze conversation messages for intent.
- * Pipeline: Claude → (retry) → GPT-4o-mini → default.
+ * Pipeline: GPT-4o → (retry) → GPT-4o-mini → default.
  */
 async function analyzeIntent(lead, messages) {
     const prompt = buildIntentPrompt(lead, messages);
@@ -191,15 +186,15 @@ async function analyzeTranscript(lead, transcript) {
 
 /**
  * Run the full analysis pipeline with retry + fallback.
- * 1. Call Claude (primary) — up to 2 attempts
+ * 1. Call GPT-4o (primary) — up to 2 attempts
  * 2. Call GPT-4o-mini (fallback) — 1 attempt
  * 3. Return conservative defaults if everything fails
  */
 async function runAnalysisPipeline(prompt, leadId) {
-    const primaryModel = env.openrouter.primaryModel;
-    const fallbackModel = env.openrouter.fallbackModel;
+    const primaryModel = env.openai.primaryModel;
+    const fallbackModel = env.openai.fallbackModel;
 
-    // ── Attempt 1: Claude (primary) ──────────────────────
+    // ── Attempt 1: GPT-4o (primary) ──────────────────────
     for (let attempt = 1; attempt <= 2; attempt++) {
         try {
             logger.info('[ai] Attempt ' + attempt + '/2 with ' + primaryModel + ' for lead ' + leadId);
