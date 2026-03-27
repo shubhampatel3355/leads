@@ -67,7 +67,7 @@ async function handleIntentAnalysis(payload) {
     // 4. Calculate scores
     const fitScore = calculateFitScore(lead);
     const intentScore = calculateIntentScore(analysis);
-    const { finalScore, classification } = calculateFinalScore(fitScore, intentScore);
+    const { finalScore, classification } = calculateFinalScore(fitScore, intentScore, analysis);
 
     // 5. Update lead scores
     await leadService.updateLeadScores(lead_id, {
@@ -155,7 +155,7 @@ async function handleTranscriptAnalysis(payload) {
 
     const fitScore = calculateFitScore(lead);
     const intentScore = calculateIntentScore(analysis);
-    const { finalScore, classification } = calculateFinalScore(fitScore, intentScore);
+    const { finalScore, classification } = calculateFinalScore(fitScore, intentScore, analysis);
 
     await leadService.updateLeadScores(lead_id, {
         fit_score: fitScore,

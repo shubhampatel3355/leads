@@ -23,6 +23,15 @@ const initiateCall = asyncHandler(async (req, res) => {
         firstSentence: first_sentence,
     });
 
+    // Insert conversation timeline entry so webhook can attach the transcript later
+    try {
+        await voiceService.storeCallConversation(lead.id, result.call_id, 'initiated', {
+            body: 'Outbound AI voice call initiated.',
+        });
+    } catch (err) {
+        logger.warn(`[controller:calls] Failed to store call conversation: ${err.message}`);
+    }
+
     res.json({
         message: 'Call initiated',
         lead_id: lead.id,
