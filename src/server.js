@@ -24,7 +24,7 @@ const app = express();
 // ─── Global Middleware ────────────────────────────────────────
 app.set('trust proxy', 1); // Trust first proxy (ngrok, load balancer, etc.)
 
-// Enable CORS before other middleware that might set security headers
+// Enable CORS 
 app.use(cors({
     origin: env.nodeEnv === 'production' ? [env.frontendUrl] : true,
     credentials: true,
