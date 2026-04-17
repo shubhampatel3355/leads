@@ -79,17 +79,20 @@ Qualify the lead and move them toward a meeting/demo with Mavixy.`,
         // Handle OmniDimension's potentially varied response structure
         const returnedCallId = data.call_id || data.id || data.callLogId || data.dispatch_id || (data.data && (data.data.id || data.data.call_id));
         
+        // CRITICAL DEBUG: Log the full data to see what we are getting
+        logger.info(`[voice:DEBUG] Full response from OmniDimension dispatch:`, JSON.stringify(data));
+
         if (!returnedCallId) {
-            logger.error(`[voice:initiate] OmniDimension responded successfully but no call_id was found in payload:`, JSON.stringify(data));
+            logger.error(`[voice:initiate] OmniDimension responded successfully but no call_id was found in payload. SEE DEBUG LOG ABOVE.`);
             throw new Error('Failed to retrieve call_id from OmniDimension response');
         }
 
-        logger.info(`OmniDimension AI call initiated for lead ${lead.id}, call_id: ${returnedCallId}`);
+        logger.info(`OmniDimension AI call initiated for lead ${lead.id}, ID: ${returnedCallId}`);
 
         // Store call record
         const { error: insertErr } = await supabase.from('calls').insert({
             lead_id: lead.id,
-            call_id: returnedCallId,
+            external_call_id: String(returnedCallId), // Ensure it's a string for DB
             status: 'initiated',
             created_at: new Date().toISOString(),
         });
@@ -118,7 +121,7 @@ async function storeTranscript(callId, transcript, concatenatedTranscript) {
             status: 'completed',
             completed_at: new Date().toISOString(),
         })
-        .eq('call_id', callId);
+        .eq('external_call_id', callId);
 
     if (error) {
         logger.error(`Failed to store transcript for call ${callId}:`, error.message);
@@ -137,7 +140,7 @@ async function isCallProcessed(callId) {
     const { data } = await supabase
         .from('calls')
         .select('id, status')
-        .eq('call_id', callId)
+        .eq('external_call_id', callId)
         .limit(1);
 
     return data && data.length > 0 && data[0].status === 'completed';
@@ -150,7 +153,7 @@ async function getLeadIdForCall(callId) {
     const { data } = await supabase
         .from('calls')
         .select('lead_id')
-        .eq('call_id', callId)
+        .eq('external_call_id', callId)
         .single();
 
     return data?.lead_id || null;

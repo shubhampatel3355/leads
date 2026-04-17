@@ -1,34 +1,49 @@
 /**
- * Mock OmniDimension Webhook Script
+ * Mock OmniDimension Webhook Script (Standard JSON Format)
  * Use this to simulate a successful call transcript being sent to your backend.
  * 
  * Usage:
- * 1. Find the 'external_call_id' from your 'calls' table in the database.
- * 2. Run this script: node mock_webhook.js <YOUR_EXTERNAL_CALL_ID>
+ * 1. Find the 'external_call_id' from your 'calls' table (it should no longer be NULL after restarting).
+ * 2. Run this script: node backend/scratch/mock_webhook.js <YOUR_EXTERNAL_CALL_ID>
  */
 
 const http = require('http');
 
-const callId = process.argv[2];
+const callIdInput = process.argv[2];
 
-if (!callId) {
+if (!callIdInput) {
     console.error('Error: Please provide an external_call_id.');
-    console.log('Usage: node mock_webhook.js <external_call_id>');
+    console.log('Usage: node backend/scratch/mock_webhook.js <external_call_id>');
     process.exit(1);
 }
 
+// Convert input to number if it's numeric, to match the JSON example provided
+const callId = isNaN(callIdInput) ? callIdInput : parseInt(callIdInput, 10);
+
 const payload = {
     call_id: callId,
-    status: 'completed',
-    transcript: [
-        { role: 'agent', content: 'Hi, this is Mavixy. How are you today?' },
-        { role: 'user', content: 'I am doing well, thank you. What do you do?' },
-        { role: 'agent', content: 'We help businesses with branding and web development. Are you interested in improving your digital presence?' },
-        { role: 'user', content: 'Yes, our current website is quite old. Could you send me more info?' }
-    ],
-    recording_url: 'https://example.com/recording.mp3',
-    duration: 45,
-    summary: 'The lead is interested in web development services and asked for more information.'
+    bot_id: 551,
+    bot_name: "Mavixy Outbound Sales Agent",
+    phone_number: "+919620457017",
+    call_date: new Date().toISOString().replace('T', ' ').split('.')[0],
+    call_status: "completed",
+    call_duration: 65,
+    call_direction: "outbound",
+    hangup_source: "user",
+    user_email: "mavixyteam@gmail.com",
+    call_report: {
+        summary: "The lead (Shubham) is interested in branding and web development services. He wants a follow-up call next week.",
+        sentiment: "Positive",
+        extracted_variables: {
+            "interest": "High",
+            "service_needed": "Web Dev"
+        },
+        full_conversation: "Assistant: Hi Shubham, this is Mehul from Mavixy. Is this a good time to chat?\nUser: Yes, sure.\nAssistant: Great! We help businesses with branding and web design. How is your current site performing?\nUser: It's okay but we need a refresh.\nAssistant: I understand. Should I send you some info?\nUser: Yes, please do.",
+        interactions: [
+            { sequence: 1, user_query: false, bot_response: "Hi Shubham, this is Mehul from Mavixy. Is this a good time to chat?", time: "2026-04-17 13:21:00" },
+            { sequence: 2, user_query: "Yes, sure.", bot_response: "Great! We help businesses with branding and web design. How is your current site performing?", time: "2026-04-17 13:21:05" }
+        ]
+    }
 };
 
 const options = {
@@ -38,7 +53,7 @@ const options = {
     method: 'POST',
     headers: {
         'Content-Type': 'application/json',
-        'Content-Length': JSON.stringify(payload).length
+        'Content-Length': Buffer.byteLength(JSON.stringify(payload))
     }
 };
 
