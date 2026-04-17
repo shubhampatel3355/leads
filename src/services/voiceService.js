@@ -4,6 +4,7 @@ const logger = require('../utils/logger');
 
 /**
  * Initiate a voice call via OmniDimension AI.
+ * Uses the Variable Replacement System (call_context) for dynamic scripts.
  */
 async function initiateCall(lead, { task, voice = 'maya', firstSentence } = {}) {
     if (!lead.phone) {
@@ -14,24 +15,26 @@ async function initiateCall(lead, { task, voice = 'maya', firstSentence } = {}) 
         throw new Error('OmniDimension Agent ID is not configured (OMNIDIMENSION_AGENT_ID)');
     }
 
-    // Prepare override payload
-    // task and first_sentence MUST be at the top level to override dashboard settings
+    // Prepare override payload via call_context variables
+    // IMPORTANT: Dashboard must have placeholders like [welcome_message] and [custom_script]
     const payload = {
         agent_id: parseInt(env.omniDimension.agentId, 10) || env.omniDimension.agentId,
-        phone_number: lead.phone,
+        to_number: lead.phone, // API uses to_number, not phone_number sometimes
+        phone_number: lead.phone, // Keeping phone_number for compatibility
         webhook_url: env.omniDimension.webhookUrl,
-        task: task || '', 
-        first_sentence: firstSentence || '',
         ...(env.omniDimension.fromNumberId && { from_number_id: parseInt(env.omniDimension.fromNumberId, 10) || env.omniDimension.fromNumberId }),
         call_context: {
             lead_id: lead.id,
             name: lead.name,
             company: lead.company,
+            // These match the [variables] in the OmniDimension Dashboard
+            welcome_message: firstSentence || '', 
+            custom_script: task || '',
         }
     };
 
-    if (!payload.task) {
-        logger.warn(`[voice] No dynamic task provided for lead ${lead.id}. OmniDimension will use default dashboard settings.`);
+    if (!payload.call_context.custom_script) {
+        logger.warn(`[voice] No dynamic task provided for lead ${lead.id}. AI will fall back to static dashboard instructions.`);
     }
 
     logger.info(`[voice] Dispatching call via OmniDimension to lead ${lead.id} (${lead.phone})`);
@@ -76,7 +79,6 @@ async function initiateCall(lead, { task, voice = 'maya', firstSentence } = {}) 
 
         if (insertErr) {
             logger.error(`[voice:initiate] Failed to insert initial call record for ${returnedCallId}:`, insertErr.message);
-            // We still return the call_id as the call was actually placed
         }
 
         return { call_id: returnedCallId, status: data.status || 'initiated' };
@@ -163,7 +165,6 @@ async function createCallRecord(leadId, callId) {
 
 /**
  * Check if a call already exists for a lead (duplicate prevention).
- * Returns true if any call record (initiated or completed) exists.
  */
 async function hasExistingCall(leadId) {
     const { data } = await supabase
@@ -177,10 +178,6 @@ async function hasExistingCall(leadId) {
 
 /**
  * Store a conversation entry for an AI call event.
- * @param {string} leadId
- * @param {string} callId - OmniDimension call_id
- * @param {string} status - 'initiated' | 'completed'
- * @param {object} [extra] - Additional metadata (recording_url, call_length, transcript body)
  */
 async function storeCallConversation(leadId, callId, status, extra = {}) {
     const record = {
@@ -217,7 +214,6 @@ async function storeCallConversation(leadId, callId, status, extra = {}) {
 
 /**
  * Update an existing call conversation entry with the completed transcript.
- * Finds the 'initiated' conversation by external_id (call_id) and updates it.
  */
 async function updateCallConversationWithTranscript(callId, extra = {}) {
     const updateData = {
@@ -242,7 +238,6 @@ async function updateCallConversationWithTranscript(callId, extra = {}) {
 
     if (error) {
         logger.warn(`[voice] Failed to update call conversation for ${callId}: ${error.message}`);
-        // Fallback: the row might not exist, that's okay
         return null;
     }
 

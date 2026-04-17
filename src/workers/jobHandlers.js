@@ -341,9 +341,9 @@ async function handleAiCallInitiate(payload) {
         const meta = campaign?.meta || {};
         
         if (meta.opening_context === 'standard' || !meta.opening_context) {
-            firstSentence = `Hi ${lead.name}, this is Mavixy reaching out regarding your business at ${lead.company || 'your company'}. Do you have a quick moment?`;
+            firstSentence = `Hi ${lead.name}, I'm reaching out regarding your business at ${lead.company || 'your company'}. Do you have a quick moment?`;
         } else if (meta.opening_context === 'urgent') {
-            firstSentence = `Hi ${lead.name}, I'm calling from Mavixy with a quick update for ${lead.company || 'your business'}. Is now a good time?`;
+            firstSentence = `Hi ${lead.name}, I'm calling with a quick update for ${lead.company || 'your business'}. Is now a good time?`;
         }
         // ... add more context-based openings here
     }
