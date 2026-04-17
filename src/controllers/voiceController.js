@@ -44,70 +44,85 @@ const initiateCall = asyncHandler(async (req, res) => {
  * Receive call transcript from OmniDimension AI.
  */
 const callEndedWebhook = asyncHandler(async (req, res) => {
-    // Log the entire payload for debugging (Essential for new integration)
+    // Log the entire payload for debugging (Essential for local testing/fixing)
     logger.info(`[voice:webhook] Incoming OmniDimension payload:`, JSON.stringify(req.body));
 
-    // Standard OmniDimension payload properties (as per user's JSON example)
+    // Standard OmniDimension payload properties
     const call_id = req.body.call_id || req.body.id;
     const status = req.body.call_status || req.body.status || 'completed';
+    const phone_number = req.body.to_number || req.body.phone_number; // The lead's phone
     
     // OmniDimension nests details in call_report
     const call_report = req.body.call_report || {};
     const transcriptText = call_report.full_conversation || req.body.transcript || '';
     
-    // Handle formatting (convert string to JSON-like array if needed for UI, or keep as string)
+    // Formatting
     const concatenated_transcript = transcriptText;
-    const transcript = [{ role: 'system', content: transcriptText }]; // Wrap string for DB JSONB format
+    const transcript = [{ role: 'system', content: transcriptText }];
     
     const recording_url = req.body.recording_url || call_report.recording_url || req.body.recording;
     const call_length = req.body.call_duration || req.body.call_length || req.body.duration || call_report.duration;
     const summary = call_report.summary || req.body.summary || req.body.call_summary;
-
-    logger.info(`OmniDimension Webhook processed — ID: ${call_id}, status: ${status}`);
 
     if (!call_id) {
         logger.warn('[voice:webhook] Received webhook without a valid call_id.');
         return res.status(400).json({ error: 'call_id is required' });
     }
 
-    // Idempotency check
-    const alreadyProcessed = await voiceService.isCallProcessed(call_id);
-    if (alreadyProcessed) {
-        logger.warn(`Duplicate call webhook for ${call_id}, skipping`);
-        return res.status(200).json({ message: 'Already processed' });
+    // 1. Try to find the lead by Call ID first
+    let leadId = await voiceService.getLeadIdForCall(call_id);
+    let matchMethod = 'ID';
+
+    // 2. FALLBACK: If not found by ID, try looking up by phone number
+    if (!leadId && phone_number) {
+        logger.info(`[voice:webhook] Match NOT found by ID (${call_id}). Searching by phone: ${phone_number}...`);
+        leadId = await voiceService.getLeadIdByPhone(phone_number);
+        
+        if (leadId) {
+            matchMethod = 'Phone';
+            logger.info(`[voice:webhook] Found lead ${leadId} by phone number fallback. Repairing record...`);
+            // Repair the record so future lookups by ID work
+            await voiceService.createCallRecord(leadId, call_id);
+        }
     }
 
-    // Store transcript
-    await voiceService.storeTranscript(call_id, transcript, concatenated_transcript);
-
-    // Get associated lead
-    const leadId = await voiceService.getLeadIdForCall(call_id);
-
-    // Update existing conversation entry with transcript, or create one
     if (leadId) {
+        logger.info(`[voice:webhook] Processing transcript for lead ${leadId} (Matched by: ${matchMethod})`);
+
+        // Check if already processed
+        const alreadyProcessed = await voiceService.isCallProcessed(call_id);
+        if (alreadyProcessed) {
+            logger.info(`[voice:webhook] Call ${call_id} already processed, skipping.`);
+            return res.json({ message: 'Already processed', call_id });
+        }
+
+        // Store transcript and update call status
+        await voiceService.storeTranscript(call_id, transcript, concatenated_transcript);
+
+        // Update/Store conversation history
         try {
             await voiceService.updateCallConversationWithTranscript(call_id, {
-                body: summary || 'Call completed',
-                recording_url: recording_url || null,
-                call_length: call_length || null,
-                summary: summary || null,
+                body: concatenated_transcript,
+                recording_url,
+                call_length
             });
         } catch (err) {
-            logger.warn(`[webhook:call-ended] Failed to update call conversation:`, err.message);
+            // Fallback: if no initiation record existed in conversations, store a new one
+            await voiceService.storeCallConversation(leadId, call_id, 'completed', {
+                body: concatenated_transcript,
+                recording_url,
+                call_length
+            });
         }
-    }
 
-    if (leadId && concatenated_transcript) {
-        // Queue transcript analysis (Postgres job queue)
-        try {
-            await enqueue('transcript-analysis', {
-                lead_id: leadId,
-                call_id,
-                transcript: concatenated_transcript,
-            });
-        } catch (err) {
-            logger.warn('Failed to queue transcript analysis:', err.message);
-        }
+        // Queue transcript analysis job
+        await enqueue('transcript-analysis', {
+            lead_id: leadId,
+            call_id,
+            transcript: concatenated_transcript,
+        });
+    } else {
+        logger.warn(`[voice:webhook] Could not associate call ${call_id} with any lead by ID or phone (${phone_number}).`);
     }
 
     res.json({ message: 'Transcript received', call_id });

@@ -202,9 +202,8 @@ async function getLeads(userId, { page = 1, limit = 20, classification, search }
         totalPages: Math.ceil(count / limit),
     };
 }
-
 /**
- * Fetch a single lead by ID.
+ * Fetch a single lead by ID and verify ownership.
  */
 async function getLeadById(leadId, userId) {
     const { data, error } = await supabase
@@ -219,6 +218,23 @@ async function getLeadById(leadId, userId) {
         err.status = 404;
         throw err;
     }
+
+    return data;
+}
+
+/**
+ * Fetch a single lead by normalized phone number.
+ */
+async function getLeadByPhone(phone) {
+    if (!phone) return null;
+    const normalized = normalizePhone(phone);
+    
+    const { data } = await supabase
+        .from('leads')
+        .select('*')
+        .eq('phone', normalized)
+        .limit(1)
+        .maybeSingle();
 
     return data;
 }
@@ -241,4 +257,6 @@ async function updateLeadScores(leadId, scores) {
     if (error) throw new Error(`Failed to update lead scores: ${error.message}`);
 }
 
-module.exports = { processUploadFromStorage, getLeads, getLeadById, updateLeadScores };
+module.exports = { 
+    processUploadFromStorage, getLeads, getLeadById, getLeadByPhone, updateLeadScores 
+};

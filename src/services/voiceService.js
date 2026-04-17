@@ -160,6 +160,31 @@ async function getLeadIdForCall(callId) {
 }
 
 /**
+ * Find internal lead ID by normalized phone number.
+ */
+async function getLeadIdByPhone(phone) {
+    const { getLeadByPhone } = require('./leadService');
+    const lead = await getLeadByPhone(phone);
+    return lead?.id || null;
+}
+
+/**
+ * Manually create a call record (used by webhook fallback).
+ */
+async function createCallRecord(leadId, callId) {
+    const { error } = await supabase.from('calls').insert({
+        lead_id: leadId,
+        external_call_id: String(callId),
+        status: 'initiated',
+        created_at: new Date().toISOString(),
+    });
+    
+    if (error) {
+        logger.error(`[voice:service] Failed to create fallback call record:`, error.message);
+    }
+}
+
+/**
  * Check if a call already exists for a lead (duplicate prevention).
  * Returns true if any call record (initiated or completed) exists.
  */
@@ -248,4 +273,4 @@ async function updateCallConversationWithTranscript(callId, extra = {}) {
     return data;
 }
 
-module.exports = { initiateCall, storeTranscript, isCallProcessed, getLeadIdForCall, hasExistingCall, storeCallConversation, updateCallConversationWithTranscript };
+module.exports = { initiateCall, storeTranscript, isCallProcessed, getLeadIdForCall, hasExistingCall, storeCallConversation, updateCallConversationWithTranscript, getLeadIdByPhone, createCallRecord };
