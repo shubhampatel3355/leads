@@ -89,7 +89,7 @@ Qualify the lead and move them toward a meeting/demo with Mavixy.`,
         // Store call record
         const { error: insertErr } = await supabase.from('calls').insert({
             lead_id: lead.id,
-            external_call_id: returnedCallId,
+            call_id: returnedCallId,
             status: 'initiated',
             created_at: new Date().toISOString(),
         });
@@ -118,7 +118,7 @@ async function storeTranscript(callId, transcript, concatenatedTranscript) {
             status: 'completed',
             completed_at: new Date().toISOString(),
         })
-        .eq('external_call_id', callId);
+        .eq('call_id', callId);
 
     if (error) {
         logger.error(`Failed to store transcript for call ${callId}:`, error.message);
@@ -137,7 +137,7 @@ async function isCallProcessed(callId) {
     const { data } = await supabase
         .from('calls')
         .select('id, status')
-        .eq('external_call_id', callId)
+        .eq('call_id', callId)
         .limit(1);
 
     return data && data.length > 0 && data[0].status === 'completed';
@@ -150,7 +150,7 @@ async function getLeadIdForCall(callId) {
     const { data } = await supabase
         .from('calls')
         .select('lead_id')
-        .eq('external_call_id', callId)
+        .eq('call_id', callId)
         .single();
 
     return data?.lead_id || null;
