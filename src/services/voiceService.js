@@ -14,48 +14,25 @@ async function initiateCall(lead, { task, voice = 'maya', firstSentence } = {}) 
         throw new Error('OmniDimension Agent ID is not configured (OMNIDIMENSION_AGENT_ID)');
     }
 
+    // Prepare override payload
+    // task and first_sentence MUST be at the top level to override dashboard settings
     const payload = {
         agent_id: parseInt(env.omniDimension.agentId, 10) || env.omniDimension.agentId,
         phone_number: lead.phone,
         webhook_url: env.omniDimension.webhookUrl,
+        task: task || '', 
+        first_sentence: firstSentence || '',
         ...(env.omniDimension.fromNumberId && { from_number_id: parseInt(env.omniDimension.fromNumberId, 10) || env.omniDimension.fromNumberId }),
         call_context: {
             lead_id: lead.id,
             name: lead.name,
             company: lead.company,
-            task: task || `You are a highly skilled sales development representative from Mavixy, a company that helps businesses grow through branding, website development, and performance marketing.
-
-Your goal is to cold call business owners and decision-makers like ${lead.name} from ${lead.company || 'their company'} to understand their current digital presence and identify opportunities where Mavixy can help.
-
-You must behave like a real human salesperson — not robotic. Speak naturally, confidently, and conversationally. Listen carefully to the user's responses and adapt your conversation accordingly.
-
-Key Responsibilities:
-- Start with a friendly introduction and ask if it's a good time to talk
-- Ask open-ended questions to understand their business, current website, and marketing efforts
-- Identify pain points such as lack of leads, poor website, low online visibility, or no marketing strategy
-- Based on their responses, suggest relevant services (website development, branding, performance marketing, SEO, ads, etc.)
-- Keep responses short, clear, and conversational (avoid long monologues)
-- Handle objections naturally (e.g., "not interested", "already working with someone", "no budget")
-- If the lead is interested, try to book a follow-up call or meeting
-
-Conversation Style:
-- Be polite, friendly, and slightly persuasive
-- Sound like a real human thinking, not scripted
-- Use simple English (avoid jargon unless needed)
-- Ask follow-up questions based on what the customer says
-- Do not interrupt the user — let them finish speaking
-
-Important:
-- Never sound like an AI
-- Never read from a fixed script
-- Adapt dynamically to each conversation
-- Focus on understanding first, selling second
-
-Goal:
-Qualify the lead and move them toward a meeting/demo with Mavixy.`,
-            first_sentence: firstSentence || `Hi ${lead.name}, this is Mavixy reaching out. Do you have a quick moment?`
         }
     };
+
+    if (!payload.task) {
+        logger.warn(`[voice] No dynamic task provided for lead ${lead.id}. OmniDimension will use default dashboard settings.`);
+    }
 
     logger.info(`[voice] Dispatching call via OmniDimension to lead ${lead.id} (${lead.phone})`);
     
