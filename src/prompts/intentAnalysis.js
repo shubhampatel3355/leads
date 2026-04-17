@@ -11,10 +11,11 @@ const SYSTEM_PROMPT = [
   'You are an AI Sales Qualifier. Your job is to naturally analyze conversations with leads, extract key qualification signals, and dynamically score the lead based on real buying intent.',
   'Your goal is NOT to interrogate. Your goal is to evaluate the natural conversation while uncovering:',
   '- Intent',
-  '- Timeline',
+  '- Timeline (be extremely specific about dates/times mentioned)',
   '- Budget',
   '- Authority',
   '- Problem urgency (pain)',
+  '- Callback Time (if they request to be called back at a specific time, capture it)',
   '',
   'You must continuously update a lead score.',
   '',
@@ -93,6 +94,7 @@ const OUTPUT_SCHEMA = JSON.stringify({
   total_score: 'number (0-120)',
   classification: 'hot | warm | cold',
   willingness_to_speak: 'string — e.g., "Interested in immediate callback", "Wants to talk next month", "Hard no"',
+  callback_time: 'string — capture the EXACT time/date mentioned (e.g., "6pm today", "Tomorrow at 2pm"), return null if not mentioned',
   key_problems: 'string — specific problems or pain points mentioned',
   current_solution: 'string — what are they currently using/doing for this?',
   recommended_next_step: 'string — one-line recommended action',
@@ -139,24 +141,40 @@ function buildIntentPrompt(lead, messages) {
 /**
  * Build the user prompt for voice-call transcripts.
  */
-function buildTranscriptPrompt(lead, transcript) {
-  return [
+function buildTranscriptPrompt(lead, transcript, campaignContext = null) {
+  const meta = campaignContext?.meta || {};
+  
+  const sections = [
     '## Business Context',
-    'You are qualifying leads for Mavixy, a company that helps businesses grow through branding, website development, and performance marketing.',
-    '',
-    '## Lead Information',
-    '- Name: ' + (lead.name || 'Unknown'),
-    '- Company: ' + (lead.company || 'Unknown'),
-    '- Job Title: ' + (lead.job_title || 'Unknown'),
-    '',
-    '## Call Transcript',
-    transcript,
-    '',
-    '## Required Output',
-    'Analyse the transcript above and return the following JSON. Use ONLY the specified enum values. Return the JSON object only, nothing else.',
-    '',
-    OUTPUT_SCHEMA,
-  ].join('\n');
+    'You are qualifying leads for Mavixy, a company that helps businesses grow through branding, website development, and performance marketing.'
+  ];
+
+  if (campaignContext?.name) {
+    sections.push(`This lead is part of the campaign: "${campaignContext.name}".`);
+  }
+
+  if (meta.goal) {
+    sections.push(`**Campaign Goal:** ${meta.goal.replace(/_/g, ' ')}`);
+  }
+
+  if (meta.icp_details) {
+    sections.push(`**Ideal Customer Profile (ICP) for this campaign:**`);
+    sections.push(meta.icp_details);
+  }
+
+  sections.push('', '## Lead Information');
+  sections.push('- Name: ' + (lead.name || 'Unknown'));
+  sections.push('- Company: ' + (lead.company || 'Unknown'));
+  sections.push('- Job Title: ' + (lead.job_title || 'Unknown'));
+
+  sections.push('', '## Call Transcript');
+  sections.push(transcript);
+
+  sections.push('', '## Required Output');
+  sections.push('Analyse the transcript above and return the following JSON. Use ONLY the specified enum values. Return the JSON object only, nothing else.');
+  sections.push('', OUTPUT_SCHEMA);
+
+  return sections.join('\n');
 }
 
 module.exports = { SYSTEM_PROMPT, buildIntentPrompt, buildTranscriptPrompt };

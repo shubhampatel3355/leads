@@ -139,7 +139,19 @@ async function handleTranscriptAnalysis(payload) {
     }
 
     const previousClassification = lead.classification;
-    const analysis = await analyzeTranscript(lead, transcript);
+
+    // Fetch campaign context for better analysis
+    let campaignContext = null;
+    if (lead.campaign_id) {
+        const { data: campaign } = await supabase
+            .from('campaigns')
+            .select('name, meta')
+            .eq('id', lead.campaign_id)
+            .single();
+        if (campaign) campaignContext = campaign;
+    }
+
+    const analysis = await analyzeTranscript(lead, transcript, campaignContext);
 
     const fitScore = calculateFitScore(lead);
     const intentScore = calculateIntentScore(analysis);
@@ -264,24 +276,82 @@ async function handleAiCallInitiate(payload) {
         return { skipped: true, reason: 'call_already_exists' };
     }
 
-    // 5. Resolve custom prompt (payload > campaign DB > default)
+    // 5. Resolve custom prompt (payload > campaign DB > dynamic generator > default)
     let customTask = payloadScript || undefined;
-    if (!customTask && effectiveCampaignId) {
+    if (effectiveCampaignId) {
         const { data: campaign } = await supabase
             .from('campaigns')
-            .select('prompt_script')
+            .select('prompt_script, meta, name')
             .eq('id', effectiveCampaignId)
             .single();
 
-        if (campaign?.prompt_script?.trim()) {
-            customTask = campaign.prompt_script;
-            logger.info(`[handler:ai-call] Using custom script from campaign ${effectiveCampaignId}`);
+        if (campaign) {
+            const meta = campaign.meta || {};
+            
+            // Build dynamic persona if internal script is light or missing
+            if (!customTask && (campaign.prompt_script?.trim() || Object.keys(meta).length > 0)) {
+                const parts = [];
+                
+                parts.push(`# AI PERSONA & MISSION`);
+                parts.push(`You are a highly skilled AI sales representative for the campaign: "${campaign.name}".`);
+                
+                if (meta.tone) parts.push(`**TONE OF VOICE:** ${meta.tone.toUpperCase()}`);
+                if (meta.language) parts.push(`**PRIMARY LANGUAGE:** ${meta.language}`);
+                
+                parts.push(`\n## 1. CONTEXT & OFFERING`);
+                if (meta.selling_context) parts.push(`**What you are selling:**\n${meta.selling_context}`);
+                if (meta.key_value_props) parts.push(`**Key Value Propositions:**\n${meta.key_value_props}`);
+                if (meta.deal_size) parts.push(`**Target Deal Size:** ${meta.deal_size.toUpperCase()}`);
+
+                parts.push(`\n## 2. CAMPAIGN OBJECTIVES`);
+                if (meta.goal) parts.push(`**Your Primary Goal:** ${meta.goal.replace(/_/g, ' ')}`);
+                if (meta.objective) parts.push(`**Campaign Objective:** ${meta.objective.replace(/_/g, ' ')}`);
+                if (meta.conversion_goal) parts.push(`**Conversion Event:** ${meta.conversion_goal.replace(/_/g, ' ')}`);
+
+                parts.push(`\n## 3. PROSPECT INTELLIGENCE (ICP)`);
+                if (meta.icp_details) parts.push(`**Ideal Customer Profile:**\n${meta.icp_details}`);
+                if (meta.lead_warmth) parts.push(`**Lead Warmth Level:** ${meta.lead_warmth.toUpperCase()}`);
+                if (meta.buying_triggers) parts.push(`**Buying Triggers to watch for:**\n${meta.buying_triggers}`);
+                
+                if (meta.objection_tags && meta.objection_tags.length > 0) {
+                    parts.push(`\n## 4. OBJECTION HANDLING`);
+                    parts.push(`Be prepared to handle these specific objections:\n- ${meta.objection_tags.join('\n- ')}`);
+                }
+
+                parts.push(`\n## 5. BEHAVIORAL GUARDRAILS`);
+                if (meta.guardrails) parts.push(`**Strict Constraints:**\n${meta.guardrails}`);
+                if (meta.escalation_conditions) parts.push(`**Escalate/End call if:**\n${meta.escalation_conditions}`);
+                if (meta.stop_conditions) parts.push(`**Stop calling this lead if:** ${meta.stop_conditions.replace(/_/g, ' ')}`);
+
+                if (campaign.prompt_script) {
+                    parts.push(`\n## 6. SPECIFIC SCRIPT & INSTRUCTIONS`);
+                    parts.push(campaign.prompt_script);
+                }
+
+                customTask = parts.join('\n');
+                logger.info(`[handler:ai-call] Generated comprehensive dynamic persona for campaign ${effectiveCampaignId}`);
+            }
         }
     }
 
-    // 6. Initiate call via OmniDimension
+    // 6. Define dynamic opening sentence based on context
+    let firstSentence = payload.first_sentence || undefined;
+    if (!firstSentence && effectiveCampaignId) {
+        const { data: campaign } = await supabase.from('campaigns').select('meta').eq('id', effectiveCampaignId).single();
+        const meta = campaign?.meta || {};
+        
+        if (meta.opening_context === 'standard' || !meta.opening_context) {
+            firstSentence = `Hi ${lead.name}, this is Mavixy reaching out regarding your business at ${lead.company || 'your company'}. Do you have a quick moment?`;
+        } else if (meta.opening_context === 'urgent') {
+            firstSentence = `Hi ${lead.name}, I'm calling from Mavixy with a quick update for ${lead.company || 'your business'}. Is now a good time?`;
+        }
+        // ... add more context-based openings here
+    }
+
+    // 7. Initiate call via OmniDimension
     const result = await voiceService.initiateCall(lead, {
         task: customTask,
+        firstSentence: firstSentence,
     });
 
     // 7. Store conversation entry for the initiated call

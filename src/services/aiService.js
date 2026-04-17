@@ -179,8 +179,8 @@ async function analyzeIntent(lead, messages) {
 /**
  * Analyze a voice call transcript for intent.
  */
-async function analyzeTranscript(lead, transcript) {
-    const prompt = buildTranscriptPrompt(lead, transcript);
+async function analyzeTranscript(lead, transcript, campaignContext = null) {
+    const prompt = buildTranscriptPrompt(lead, transcript, campaignContext);
     return runAnalysisPipeline(prompt, lead.id);
 }
 
