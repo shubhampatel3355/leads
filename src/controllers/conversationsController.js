@@ -1,4 +1,3 @@
-const whatsappService = require('../services/whatsappService');
 const supabase = require('../config/supabase');
 const { asyncHandler } = require('../middleware/errorHandler');
 
@@ -13,8 +12,17 @@ const getConversations = asyncHandler(async (req, res) => {
         return res.status(400).json({ error: 'lead_id query parameter is required' });
     }
 
-    const messages = await whatsappService.getConversation(lead_id);
-    res.json({ lead_id, messages });
+    const { data: messages, error } = await supabase
+        .from('conversations')
+        .select('*')
+        .eq('lead_id', lead_id)
+        .order('created_at', { ascending: true });
+        
+    if (error) {
+        throw new Error(`Failed to fetch conversation: ${error.message}`);
+    }
+
+    res.json({ lead_id, messages: messages || [] });
 });
 
 /**

@@ -114,7 +114,8 @@ function buildIntentPrompt(lead, messages) {
 
   return [
     '## Business Context',
-    'You are qualifying leads for a B2B SaaS company. The Ideal Customer Profile (ICP) is mid-to-senior decision-makers at companies actively evaluating software solutions.',
+    'You are qualifying leads for Mavixy, a company that helps businesses grow through branding, website development, and performance marketing.',
+    'The Ideal Customer Profile (ICP) is business owners and decision-makers actively evaluating or needing digital services, new websites, or marketing strategies.',
     '',
     '## Lead Information',
     '- Name: ' + (lead.name || 'Unknown'),
@@ -138,7 +139,7 @@ function buildIntentPrompt(lead, messages) {
 function buildTranscriptPrompt(lead, transcript) {
   return [
     '## Business Context',
-    'You are qualifying leads for a B2B SaaS company.',
+    'You are qualifying leads for Mavixy, a company that helps businesses grow through branding, website development, and performance marketing.',
     '',
     '## Lead Information',
     '- Name: ' + (lead.name || 'Unknown'),

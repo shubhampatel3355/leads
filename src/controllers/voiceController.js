@@ -41,12 +41,23 @@ const initiateCall = asyncHandler(async (req, res) => {
 
 /**
  * POST /webhook/call-ended
- * Receive call transcript from Bland AI.
+ * Receive call transcript from OmniDimension AI.
  */
 const callEndedWebhook = asyncHandler(async (req, res) => {
-    const { call_id, transcript, concatenated_transcript, status, recording_url, call_length, summary } = req.body;
+    // Standard OmniDimension payload properties
+    const call_id = req.body.call_id || req.body.id;
+    const status = req.body.status || 'completed';
+    
+    // OmniDimension usually nests details in call_report
+    const call_report = req.body.call_report || {};
+    const transcript = req.body.transcript || call_report.transcript || [];
+    const concatenated_transcript = typeof transcript === 'string' ? transcript : JSON.stringify(transcript);
+    
+    const recording_url = req.body.recording_url || call_report.recording_url;
+    const call_length = req.body.call_length || req.body.duration || call_report.duration;
+    const summary = req.body.summary || call_report.summary;
 
-    logger.info(`Call ended webhook for call_id: ${call_id}, status: ${status}`);
+    logger.info(`OmniDimension Call ended webhook for call_id: ${call_id}, status: ${status}`);
 
     if (!call_id) {
         return res.status(400).json({ error: 'call_id is required' });

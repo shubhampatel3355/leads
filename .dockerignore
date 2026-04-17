@@ -1,0 +1,16 @@
+node_modules
+npm-debug.log
+.env
+.env.local
+.env.production
+.git
+.gitignore
+Dockerfile
+worker.Dockerfile
+docker-compose.yml
+README.md
+tests/
+logs/
+tmp/
+.vscode/
+.dockerignore

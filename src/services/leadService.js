@@ -10,7 +10,7 @@ const logger = require('../utils/logger');
  * Download file from Supabase Storage and process it into leads.
  * Called by the upload worker (or synchronous fallback).
  */
-async function processUploadFromStorage(batchId, filePath, filename, userId) {
+async function processUploadFromStorage(batchId, filePath, filename, userId, campaignId = null) {
     const updateBatch = async (fields) => {
         await supabase.from('batch_uploads').update(fields).eq('id', batchId);
     };
@@ -93,6 +93,7 @@ async function processUploadFromStorage(batchId, filePath, filename, userId) {
                 status: 'new',
                 cleaned: true,
                 source: row.source || 'csv_upload',
+                campaign_id: campaignId,
                 created_at: new Date().toISOString(),
             };
         });
@@ -131,7 +132,7 @@ async function processUploadFromStorage(batchId, filePath, filename, userId) {
 
         logger.info(`[lead-service] Upload complete: ${insertedCount} inserted, ${duplicateCount} duplicates`);
 
-        // 9. Auto-send WhatsApp welcome message to leads with phone numbers
+        // 9. Auto-trigger AI voice calls to leads with phone numbers
         if (insertedLeadIds.length > 0) {
             try {
                 const { data: leadsWithPhones } = await supabase
@@ -142,19 +143,18 @@ async function processUploadFromStorage(batchId, filePath, filename, userId) {
 
                 const sendCount = leadsWithPhones?.length || 0;
                 if (sendCount > 0) {
-                    logger.info(`[lead-service] Queuing WhatsApp welcome for ${sendCount} leads`);
+                    logger.info(`[lead-service] Queuing AI voice calls for ${sendCount} leads`);
                 }
 
                 for (const lead of (leadsWithPhones || [])) {
-                    await enqueue('whatsapp-sending', {
+                    await enqueue('ai-call-initiate', {
                         lead_id: lead.id,
                         phone: lead.phone,
-                        message: `Hi ${lead.name || 'there'}, thanks for connecting with us! We'd love to learn more about your needs. How can we help you today?`,
                     });
                 }
             } catch (err) {
-                // Non-critical — don't fail the upload if WhatsApp queueing fails
-                logger.warn(`[lead-service] Failed to queue WhatsApp auto-send:`, err.message);
+                // Non-critical — don't fail the upload if call queueing fails
+                logger.warn(`[lead-service] Failed to queue automated AI voice calls:`, err.message);
             }
         }
 

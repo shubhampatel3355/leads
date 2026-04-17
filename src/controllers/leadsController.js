@@ -12,7 +12,7 @@ const { asyncHandler } = require('../middleware/errorHandler');
  * Returns immediately — no parsing in request lifecycle.
  */
 const uploadLeads = asyncHandler(async (req, res) => {
-    const { file_path, filename } = req.body;
+    const { file_path, filename, campaign_id } = req.body;
 
     if (!file_path) {
         return res.status(400).json({ error: 'file_path is required' });
@@ -47,6 +47,7 @@ const uploadLeads = asyncHandler(async (req, res) => {
         file_path,
         filename: filename || file_path.split('/').pop(),
         user_id: userId,
+        campaign_id: campaign_id || null,
     });
 
     logger.info(`Queued upload job: batch=${batch_id}, file=${file_path}`);
@@ -250,10 +251,10 @@ const updateLead = asyncHandler(async (req, res) => {
     await leadService.getLeadById(leadId, req.user.id);
 
     // Whitelist editable fields
-    const allowed = ['name', 'email', 'phone', 'company', 'industry', 'title', 'location', 'source'];
+    const allowed = ['name', 'email', 'phone', 'company', 'industry', 'title', 'location', 'source', 'campaign_id'];
     const updates = {};
     for (const key of allowed) {
-        if (req.body[key] !== undefined) updates[key] = req.body[key];
+        if (req.body[key] !== undefined) updates[key] = req.body[key] || null;
     }
 
     if (Object.keys(updates).length === 0) {
@@ -319,6 +320,16 @@ const createLead = asyncHandler(async (req, res) => {
         .single();
 
     if (error) throw new Error(`Failed to create lead: ${error.message}`);
+
+    // Automatically trigger an AI call if the lead has a phone number
+    if (leadData.phone) {
+        try {
+            await enqueue('ai-call-initiate', { lead_id: data.id, phone: leadData.phone });
+            logger.info(`Queued initial AI call for new lead ${data.id}`);
+        } catch (err) {
+            logger.warn(`Failed to queue initial AI call for new lead ${data.id}:`, err.message);
+        }
+    }
 
     logger.info(`Created lead ${data.id} (${name}) with fit_score=${leadData.fit_score}`);
     res.status(201).json(data);

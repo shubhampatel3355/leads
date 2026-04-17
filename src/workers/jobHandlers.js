@@ -7,25 +7,13 @@ const logger = require('../utils/logger');
 // ─── Upload Processing ─────────────────────────────────────────
 async function handleUploadProcessing(payload) {
     const { processUploadFromStorage } = require('../services/leadService');
-    const { batch_id, file_path, filename, user_id } = payload;
+    const { batch_id, file_path, filename, user_id, campaign_id } = payload;
 
     logger.info(`[handler:upload] Processing batch=${batch_id}, file=${filename}`);
-    const result = await processUploadFromStorage(batch_id, file_path, filename, user_id);
+    const result = await processUploadFromStorage(batch_id, file_path, filename, user_id, campaign_id);
     logger.info(`[handler:upload] Done: ${result.inserted} inserted, ${result.duplicates_skipped} deduped`);
 
     return result;
-}
-
-// ─── WhatsApp Sending ──────────────────────────────────────────
-async function handleWhatsappSending(payload) {
-    const whatsappService = require('../services/whatsappService');
-    const { lead_id, phone, message } = payload;
-
-    logger.info(`[handler:whatsapp] Sending to lead ${lead_id}`);
-    const result = await whatsappService.sendMessage(lead_id, phone, message);
-    logger.info(`[handler:whatsapp] Sent: ${result.sid}`);
-
-    return { sid: result.sid, status: result.status };
 }
 
 // ─── Intent Analysis ───────────────────────────────────────────
@@ -33,7 +21,6 @@ async function handleIntentAnalysis(payload) {
     const supabase = require('../config/supabase');
     const { analyzeIntent } = require('../services/aiService');
     const { calculateIntentScore, calculateFinalScore, calculateFitScore } = require('../services/scoringService');
-    const { getConversation } = require('../services/whatsappService');
     const leadService = require('../services/leadService');
     const { notifyHotLead } = require('../services/notificationService');
     const { enqueue } = require('../config/jobQueue');
@@ -54,8 +41,9 @@ async function handleIntentAnalysis(payload) {
 
     const previousClassification = lead.classification;
 
-    // 2. Fetch conversation history
-    const messages = await getConversation(lead_id);
+    // Simulate No Messages if history is not available
+    // Previously we fetched from getConversation of whatsappService
+    const messages = []; // TODO: implement multi-channel conversation fetching 
     if (!messages || messages.length === 0) {
         logger.info(`[handler:intent] No messages for lead ${lead_id}, skipping`);
         return { skipped: true, reason: 'no_messages' };
@@ -233,7 +221,7 @@ async function handleNotificationDispatch(payload) {
 async function handleAiCallInitiate(payload) {
     const supabase = require('../config/supabase');
     const voiceService = require('../services/voiceService');
-    const { lead_id } = payload;
+    const { lead_id, campaign_id, prompt_script: payloadScript } = payload;
 
     logger.info(`[handler:ai-call] Initiating AI call for lead ${lead_id}`);
 
@@ -254,21 +242,49 @@ async function handleAiCallInitiate(payload) {
         return { skipped: true, reason: 'no_phone' };
     }
 
-    // 3. Duplicate prevention — check if a call already exists
+    // 3. Check if campaign is paused — skip call if campaign is paused
+    const effectiveCampaignId = campaign_id || lead.campaign_id;
+    if (effectiveCampaignId) {
+        const { data: campaign } = await supabase
+            .from('campaigns')
+            .select('status, prompt_script')
+            .eq('id', effectiveCampaignId)
+            .single();
+
+        if (campaign?.status === 'paused') {
+            logger.info(`[handler:ai-call] Campaign ${effectiveCampaignId} is paused — skipping call for lead ${lead_id}`);
+            return { skipped: true, reason: 'campaign_paused' };
+        }
+    }
+
+    // 4. Duplicate prevention — check if a call already exists
     const callExists = await voiceService.hasExistingCall(lead_id);
     if (callExists) {
         logger.info(`[handler:ai-call] Call already exists for lead ${lead_id}, skipping`);
         return { skipped: true, reason: 'call_already_exists' };
     }
 
-    // 4. Initiate call via Bland AI
+    // 5. Resolve custom prompt (payload > campaign DB > default)
+    let customTask = payloadScript || undefined;
+    if (!customTask && effectiveCampaignId) {
+        const { data: campaign } = await supabase
+            .from('campaigns')
+            .select('prompt_script')
+            .eq('id', effectiveCampaignId)
+            .single();
+
+        if (campaign?.prompt_script?.trim()) {
+            customTask = campaign.prompt_script;
+            logger.info(`[handler:ai-call] Using custom script from campaign ${effectiveCampaignId}`);
+        }
+    }
+
+    // 6. Initiate call via OmniDimension
     const result = await voiceService.initiateCall(lead, {
-        task: `You are calling ${lead.name || 'a potential customer'}${lead.company ? ' from ' + lead.company : ''}. Your goal is to qualify their interest in improving lead qualification with AI. Ask about their current process, timeline, and budget. Be professional, friendly, and concise. Do not be pushy.`,
-        voice: 'maya',
-        firstSentence: `Hi ${lead.name || 'there'}, this is a quick follow-up call about your recent inquiry. Do you have a moment to chat?`,
+        task: customTask,
     });
 
-    // 5. Store conversation entry for the initiated call
+    // 7. Store conversation entry for the initiated call
     try {
         await voiceService.storeCallConversation(lead_id, result.call_id, 'initiated');
     } catch (err) {
@@ -282,7 +298,6 @@ async function handleAiCallInitiate(payload) {
 // ─── Handler Registry ──────────────────────────────────────────
 const handlers = {
     'upload-processing': handleUploadProcessing,
-    'whatsapp-sending': handleWhatsappSending,
     'intent-analysis': handleIntentAnalysis,
     'transcript-analysis': handleTranscriptAnalysis,
     'notification-dispatch': handleNotificationDispatch,

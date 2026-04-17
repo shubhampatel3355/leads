@@ -1,22 +1,41 @@
-# Production Dockerfile for Backend
-FROM node:20-alpine
-
-# Install build dependencies (needed for some npm packages like bufferutil, utf-8-validate)
-RUN apk add --no-cache python3 make g++ 
+# ─── Stage 1: Build & Dependencies ──────────────────────────────────
+FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files
+# Install build tools needed for native npm packages
+RUN apk add --no-cache python3 make g++
+
+# Copy package files first for layer caching
 COPY package*.json ./
 
-# Install dependencies (production only)
-RUN npm ci --only=production
+# Install production dependencies only
+RUN npm ci --only=production && npm cache clean --force
 
-# Copy source code
-COPY . .
+# ─── Stage 2: Final Runtime ─────────────────────────────────────────
+FROM node:20-alpine
 
-# Expose port
+# Set to production environment
+ENV NODE_ENV=production
+
+WORKDIR /app
+
+# Copy production dependencies from builder stage
+COPY --from=builder --chown=node:node /app/node_modules ./node_modules
+COPY --from=builder --chown=node:node /app/package*.json ./
+
+# Copy application source code
+COPY --chown=node:node . .
+
+# Switch to non-root user for security
+USER node
+
+# Expose API port
 EXPOSE 3000
 
-# Command to run the application
-CMD ["npm", "start"]
+# Healthcheck to monitor app responsiveness
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD node -e "fetch('http://localhost:3000/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"
+
+# Start the application directly with node for better signal handling
+CMD ["node", "src/server.js"]

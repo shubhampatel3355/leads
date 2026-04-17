@@ -22,12 +22,6 @@ module.exports = {
         jwtSecret: process.env.SUPABASE_JWT_SECRET,
     },
 
-    twilio: {
-        accountSid: process.env.TWILIO_ACCOUNT_SID,
-        authToken: process.env.TWILIO_AUTH_TOKEN,
-        whatsappFrom: process.env.TWILIO_WHATSAPP_FROM || 'whatsapp:+14155238886',
-        webhookUrl: process.env.TWILIO_WEBHOOK_URL || '',
-    },
 
     openai: {
         apiKey: process.env.OPENAI_API_KEY,
@@ -35,9 +29,11 @@ module.exports = {
         fallbackModel: process.env.OPENAI_FALLBACK_MODEL || 'gpt-4o-mini',
     },
 
-    bland: {
-        apiKey: process.env.BLAND_API_KEY,
-        webhookUrl: process.env.BLAND_WEBHOOK_URL,
+    omniDimension: {
+        apiKey: process.env.OMNIDIMENSION_API_KEY,
+        agentId: process.env.OMNIDIMENSION_AGENT_ID,
+        fromNumberId: process.env.OMNIDIMENSION_FROM_NUMBER_ID,
+        webhookUrl: process.env.OMNIDIMENSION_WEBHOOK_URL,
     },
 
     worker: {

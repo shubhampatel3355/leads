@@ -13,8 +13,8 @@ const { getJobStats } = require('./config/jobQueue');
 const authRoutes = require('./routes/auth');
 const leadsRoutes = require('./routes/leads');
 const conversationsRoutes = require('./routes/conversations');
-const whatsappRoutes = require('./routes/whatsapp');
 const voiceRoutes = require('./routes/voice');
+const campaignsRoutes = require('./routes/campaigns');
 const metricsRoutes = require('./routes/metrics');
 const settingsRoutes = require('./routes/settings');
 
@@ -72,8 +72,8 @@ app.get('/health', async (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/leads', leadsRoutes);
 app.use('/api/conversations', conversationsRoutes);
-app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/calls', voiceRoutes);
+app.use('/api/campaigns', campaignsRoutes);
 app.use('/api/metrics', metricsRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/dashboard', require('./routes/dashboard'));
@@ -100,13 +100,9 @@ app.get('/api/admin/jobs/stats', async (req, res) => {
 });
 
 // ─── Webhook Routes (no auth, validated by signature) ─────────
-const whatsappWebhook = require('./controllers/whatsappController');
 const voiceWebhook = require('./controllers/voiceController');
 const { webhookLimiter } = require('./middleware/rateLimiter');
-const { validateTwilioWebhook } = require('./middleware/webhookValidator');
 
-app.post('/webhook/whatsapp', webhookLimiter, validateTwilioWebhook, whatsappWebhook.webhookHandler);
-app.post('/webhook/whatsapp/status', webhookLimiter, validateTwilioWebhook, whatsappWebhook.statusCallbackHandler);
 app.post('/webhook/call-ended', webhookLimiter, voiceWebhook.callEndedWebhook);
 
 // ─── 404 Handler ──────────────────────────────────────────────

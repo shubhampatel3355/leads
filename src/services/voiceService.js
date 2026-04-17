@@ -3,52 +3,88 @@ const supabase = require('../config/supabase');
 const logger = require('../utils/logger');
 
 /**
- * Initiate a voice call via Bland AI.
+ * Initiate a voice call via OmniDimension AI.
  */
 async function initiateCall(lead, { task, voice = 'maya', firstSentence } = {}) {
     if (!lead.phone) {
         throw Object.assign(new Error('Lead has no phone number'), { status: 400 });
     }
 
+    if (!env.omniDimension.agentId) {
+        throw new Error('OmniDimension Agent ID is not configured (OMNIDIMENSION_AGENT_ID)');
+    }
+
     const payload = {
-        phone_number: lead.phone,
-        task: task || `You are calling ${lead.name} from ${lead.company || 'their company'}. Have a professional sales discovery conversation. Understand their needs, timeline, and budget.`,
-        voice: voice,
-        first_sentence: firstSentence || `Hi ${lead.name}, this is a quick call to follow up on our recent conversation. Do you have a moment?`,
-        record: true,
-        webhook: env.bland.webhookUrl,
-        metadata: {
+        agent_id: parseInt(env.omniDimension.agentId, 10) || env.omniDimension.agentId,
+        to_number: lead.phone,
+        ...(env.omniDimension.fromNumberId && { from_number_id: parseInt(env.omniDimension.fromNumberId, 10) || env.omniDimension.fromNumberId }),
+        call_context: {
             lead_id: lead.id,
-        },
+            name: lead.name,
+            company: lead.company,
+            task: task || `You are a highly skilled sales development representative from Mavixy, a company that helps businesses grow through branding, website development, and performance marketing.
+
+Your goal is to cold call business owners and decision-makers like ${lead.name} from ${lead.company || 'their company'} to understand their current digital presence and identify opportunities where Mavixy can help.
+
+You must behave like a real human salesperson — not robotic. Speak naturally, confidently, and conversationally. Listen carefully to the user's responses and adapt your conversation accordingly.
+
+Key Responsibilities:
+- Start with a friendly introduction and ask if it's a good time to talk
+- Ask open-ended questions to understand their business, current website, and marketing efforts
+- Identify pain points such as lack of leads, poor website, low online visibility, or no marketing strategy
+- Based on their responses, suggest relevant services (website development, branding, performance marketing, SEO, ads, etc.)
+- Keep responses short, clear, and conversational (avoid long monologues)
+- Handle objections naturally (e.g., "not interested", "already working with someone", "no budget")
+- If the lead is interested, try to book a follow-up call or meeting
+
+Conversation Style:
+- Be polite, friendly, and slightly persuasive
+- Sound like a real human thinking, not scripted
+- Use simple English (avoid jargon unless needed)
+- Ask follow-up questions based on what the customer says
+- Do not interrupt the user — let them finish speaking
+
+Important:
+- Never sound like an AI
+- Never read from a fixed script
+- Adapt dynamically to each conversation
+- Focus on understanding first, selling second
+
+Goal:
+Qualify the lead and move them toward a meeting/demo with Mavixy.`,
+            first_sentence: firstSentence || `Hi ${lead.name}, this is Mavixy reaching out. Do you have a quick moment?`
+        }
     };
 
     try {
-        const response = await fetch('https://api.bland.ai/v1/calls', {
+        const response = await fetch('https://backend.omnidim.io/api/v1/calls/dispatch', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': env.bland.apiKey,
+                'Authorization': `Bearer ${env.omniDimension.apiKey}`,
             },
             body: JSON.stringify(payload),
         });
 
         if (!response.ok) {
             const errBody = await response.text();
-            throw new Error(`Bland AI call failed (${response.status}): ${errBody}`);
+            throw new Error(`OmniDimension AI call failed (${response.status}): ${errBody}`);
         }
 
         const data = await response.json();
-        logger.info(`Bland AI call initiated for lead ${lead.id}, call_id: ${data.call_id}`);
+        // Assuming OmniDimension returns { call_id: '...' } or { id: '...' }
+        const returnedCallId = data.call_id || data.id || data.callLogId;
+        logger.info(`OmniDimension AI call initiated for lead ${lead.id}, call_id: ${returnedCallId}`);
 
         // Store call record
         await supabase.from('calls').insert({
             lead_id: lead.id,
-            external_call_id: data.call_id,
+            external_call_id: returnedCallId,
             status: 'initiated',
             created_at: new Date().toISOString(),
         });
 
-        return { call_id: data.call_id, status: data.status };
+        return { call_id: returnedCallId, status: data.status || 'initiated' };
     } catch (err) {
         logger.error(`Voice call failed for lead ${lead.id}:`, err.message);
         throw err;
@@ -122,7 +158,7 @@ async function hasExistingCall(leadId) {
 /**
  * Store a conversation entry for an AI call event.
  * @param {string} leadId
- * @param {string} callId - Bland AI call_id
+ * @param {string} callId - OmniDimension call_id
  * @param {string} status - 'initiated' | 'completed'
  * @param {object} [extra] - Additional metadata (recording_url, call_length, transcript body)
  */
