@@ -44,22 +44,26 @@ const initiateCall = asyncHandler(async (req, res) => {
  * Receive call transcript from OmniDimension AI.
  */
 const callEndedWebhook = asyncHandler(async (req, res) => {
+    // Log the entire payload for debugging (Crucial when integration fails)
+    logger.info(`[voice:webhook] Received OmniDimension payload:`, JSON.stringify(req.body));
+
     // Standard OmniDimension payload properties
-    const call_id = req.body.call_id || req.body.id;
-    const status = req.body.status || 'completed';
+    const call_id = req.body.call_id || req.body.id || (req.body.data && (req.body.data.id || req.body.data.call_id));
+    const status = req.body.status || req.body.call_status || 'completed';
     
     // OmniDimension usually nests details in call_report
-    const call_report = req.body.call_report || {};
+    const call_report = req.body.call_report || req.body.data || {};
     const transcript = req.body.transcript || call_report.transcript || [];
     const concatenated_transcript = typeof transcript === 'string' ? transcript : JSON.stringify(transcript);
     
-    const recording_url = req.body.recording_url || call_report.recording_url;
-    const call_length = req.body.call_length || req.body.duration || call_report.duration;
-    const summary = req.body.summary || call_report.summary;
+    const recording_url = req.body.recording_url || call_report.recording_url || req.body.recording;
+    const call_length = req.body.call_length || req.body.duration || call_report.duration || call_report.call_length;
+    const summary = req.body.summary || call_report.summary || req.body.call_summary;
 
-    logger.info(`OmniDimension Call ended webhook for call_id: ${call_id}, status: ${status}`);
+    logger.info(`OmniDimension Call ended webhook processed for call_id: ${call_id}, status: ${status}`);
 
     if (!call_id) {
+        logger.warn('[voice:webhook] Received webhook without a valid call_id. Check logs for payload.');
         return res.status(400).json({ error: 'call_id is required' });
     }
 

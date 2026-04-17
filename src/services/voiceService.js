@@ -75,17 +75,29 @@ Qualify the lead and move them toward a meeting/demo with Mavixy.`,
         }
 
         const data = await response.json();
-        // Assuming OmniDimension returns { call_id: '...' } or { id: '...' }
-        const returnedCallId = data.call_id || data.id || data.callLogId;
+        
+        // Handle OmniDimension's potentially varied response structure
+        const returnedCallId = data.call_id || data.id || data.callLogId || data.dispatch_id || (data.data && (data.data.id || data.data.call_id));
+        
+        if (!returnedCallId) {
+            logger.error(`[voice:initiate] OmniDimension responded successfully but no call_id was found in payload:`, JSON.stringify(data));
+            throw new Error('Failed to retrieve call_id from OmniDimension response');
+        }
+
         logger.info(`OmniDimension AI call initiated for lead ${lead.id}, call_id: ${returnedCallId}`);
 
         // Store call record
-        await supabase.from('calls').insert({
+        const { error: insertErr } = await supabase.from('calls').insert({
             lead_id: lead.id,
             external_call_id: returnedCallId,
             status: 'initiated',
             created_at: new Date().toISOString(),
         });
+
+        if (insertErr) {
+            logger.error(`[voice:initiate] Failed to insert initial call record for ${returnedCallId}:`, insertErr.message);
+            // We still return the call_id as the call was actually placed
+        }
 
         return { call_id: returnedCallId, status: data.status || 'initiated' };
     } catch (err) {
