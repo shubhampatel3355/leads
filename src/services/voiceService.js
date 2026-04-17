@@ -16,7 +16,8 @@ async function initiateCall(lead, { task, voice = 'maya', firstSentence } = {}) 
 
     const payload = {
         agent_id: parseInt(env.omniDimension.agentId, 10) || env.omniDimension.agentId,
-        to_number: lead.phone,
+        phone_number: lead.phone,
+        webhook_url: env.omniDimension.webhookUrl,
         ...(env.omniDimension.fromNumberId && { from_number_id: parseInt(env.omniDimension.fromNumberId, 10) || env.omniDimension.fromNumberId }),
         call_context: {
             lead_id: lead.id,

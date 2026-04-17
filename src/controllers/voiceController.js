@@ -6,7 +6,7 @@ const { asyncHandler } = require('../middleware/errorHandler');
 
 /**
  * POST /api/calls/initiate
- * Start a Bland AI voice call for a lead.
+ * Start an OmniDimension AI voice call for a lead.
  */
 const initiateCall = asyncHandler(async (req, res) => {
     const { lead_id, task, voice, first_sentence } = req.body;

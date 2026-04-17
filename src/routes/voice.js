@@ -7,7 +7,7 @@ const { webhookLimiter } = require('../middleware/rateLimiter');
 // POST /api/calls/initiate — authenticated
 router.post('/initiate', auth, ctrl.initiateCall);
 
-// POST /webhook/call-ended — Bland AI webhook
+// POST /webhook/call-ended — OmniDimension AI webhook
 router.post('/call-ended', webhookLimiter, ctrl.callEndedWebhook);
 
 module.exports = router;
