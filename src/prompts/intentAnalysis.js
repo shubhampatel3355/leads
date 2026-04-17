@@ -92,8 +92,11 @@ const OUTPUT_SCHEMA = JSON.stringify({
   pain_score: 'number (0-20)',
   total_score: 'number (0-120)',
   classification: 'hot | warm | cold',
+  willingness_to_speak: 'string — e.g., "Interested in immediate callback", "Wants to talk next month", "Hard no"',
+  key_problems: 'string — specific problems or pain points mentioned',
+  current_solution: 'string — what are they currently using/doing for this?',
   recommended_next_step: 'string — one-line recommended action',
-  summary: 'string — brief summary of the prospect situation',
+  summary: 'string — comprehensive 3-4 sentence detailed analysis of the prospect situation and interaction',
 }, null, 2);
 
 // ─── User Prompt Builder ───────────────────────────────────────────
