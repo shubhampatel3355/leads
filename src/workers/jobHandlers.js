@@ -97,20 +97,8 @@ async function handleIntentAnalysis(payload) {
     }
 
     // 8. Auto-trigger AI call when classification changes cold → warm
-    if (previousClassification === 'cold' && classification === 'warm' && lead.phone) {
-        try {
-            const { hasExistingCall } = require('../services/voiceService');
-            const callExists = await hasExistingCall(lead_id);
-            if (!callExists) {
-                await enqueue('ai-call-initiate', { lead_id, phone: lead.phone });
-                logger.info(`[handler:intent] Queued ai-call-initiate for lead ${lead_id} (cold → warm)`);
-            } else {
-                logger.info(`[handler:intent] Skipping ai-call-initiate for lead ${lead_id}, call already exists`);
-            }
-        } catch (err) {
-            logger.warn(`[handler:intent] Failed to queue ai-call-initiate:`, err.message);
-        }
-    }
+    // 8. Auto-trigger AI voice calls has been removed to ensure manual campaign control.
+    // Leads will only be called when the user explicitly clicks "Launch Campaign".
 
     logger.info(`[handler:intent] Lead ${lead_id}: ${previousClassification} → ${classification} (score: ${finalScore})`);
     return { lead_id, classification, final_score: finalScore };

@@ -132,31 +132,8 @@ async function processUploadFromStorage(batchId, filePath, filename, userId, cam
 
         logger.info(`[lead-service] Upload complete: ${insertedCount} inserted, ${duplicateCount} duplicates`);
 
-        // 9. Auto-trigger AI voice calls to leads with phone numbers
-        if (insertedLeadIds.length > 0) {
-            try {
-                const { data: leadsWithPhones } = await supabase
-                    .from('leads')
-                    .select('id, phone, name')
-                    .in('id', insertedLeadIds)
-                    .not('phone', 'is', null);
-
-                const sendCount = leadsWithPhones?.length || 0;
-                if (sendCount > 0) {
-                    logger.info(`[lead-service] Queuing AI voice calls for ${sendCount} leads`);
-                }
-
-                for (const lead of (leadsWithPhones || [])) {
-                    await enqueue('ai-call-initiate', {
-                        lead_id: lead.id,
-                        phone: lead.phone,
-                    });
-                }
-            } catch (err) {
-                // Non-critical — don't fail the upload if call queueing fails
-                logger.warn(`[lead-service] Failed to queue automated AI voice calls:`, err.message);
-            }
-        }
+        // Step 9 (Auto-trigger) has been removed. 
+        // Calls now happen ONLY when a campaign is manually launched.
 
         return {
             total_parsed: rawRows.length,
