@@ -101,12 +101,24 @@ const callEndedWebhook = asyncHandler(async (req, res) => {
 
         // Update/Store conversation history
         try {
-            await voiceService.updateCallConversationWithTranscript(call_id, {
+            const updatedConvo = await voiceService.updateCallConversationWithTranscript(call_id, {
                 body: concatenated_transcript,
                 recording_url,
                 call_length
             });
+            
+            if (!updatedConvo) {
+                logger.info(`[voice:webhook] Timeline update returned no result for ${call_id}. Attempting fallback creation...`);
+                await voiceService.storeCallConversation(leadId, call_id, 'completed', {
+                    body: concatenated_transcript,
+                    recording_url,
+                    call_length
+                });
+            } else {
+                logger.info(`[voice:webhook] Successfully updated conversation timeline for ${call_id}.`);
+            }
         } catch (err) {
+            logger.warn(`[voice:webhook] Timeline update failed, falling back to new record creation: ${err.message}`);
             // Fallback: if no initiation record existed in conversations, store a new one
             await voiceService.storeCallConversation(leadId, call_id, 'completed', {
                 body: concatenated_transcript,

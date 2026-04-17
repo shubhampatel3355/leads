@@ -184,11 +184,11 @@ async function storeCallConversation(leadId, callId, status, extra = {}) {
         lead_id: leadId,
         direction: 'outbound',
         channel: 'call',
-        body: extra.body || null,
-        external_id: callId,
+        body: extra.body || 'Outbound AI voice call initiated.',
+        external_id: String(callId), // Force string for DB matching
         status,
         metadata: {
-            call_id: callId,
+            call_id: String(callId),
             status,
             ...(extra.recording_url ? { recording_url: extra.recording_url } : {}),
             ...(extra.call_length ? { call_length: extra.call_length } : {}),
@@ -231,7 +231,7 @@ async function updateCallConversationWithTranscript(callId, extra = {}) {
     const { data, error } = await supabase
         .from('conversations')
         .update(updateData)
-        .eq('external_id', callId)
+        .eq('external_id', String(callId)) // Force string for lookup
         .eq('channel', 'call')
         .select('id')
         .single();
