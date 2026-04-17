@@ -291,6 +291,7 @@ async function resumeCampaign(req, res) {
 // ─── GET /api/campaigns/:id/leads ─────────────────────────────
 async function getCampaignLeads(req, res) {
     try {
+        const { id } = req.params;
         // Fetch campaign to get launch time for filtering stale call data
         const { data: campaign } = await supabase
             .from('campaigns')
