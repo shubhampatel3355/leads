@@ -57,6 +57,8 @@ Qualify the lead and move them toward a meeting/demo with Mavixy.`,
         }
     };
 
+    logger.info(`[voice] Dispatching call via OmniDimension to lead ${lead.id} (${lead.phone})`);
+    
     try {
         const response = await fetch('https://backend.omnidim.io/api/v1/calls/dispatch', {
             method: 'POST',
