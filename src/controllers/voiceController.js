@@ -56,9 +56,19 @@ const callEndedWebhook = asyncHandler(async (req, res) => {
     const call_report = req.body.call_report || {};
     const transcriptText = call_report.full_conversation || req.body.transcript || '';
     
-    // Formatting
-    const concatenated_transcript = transcriptText;
-    const transcript = [{ role: 'system', content: transcriptText }];
+    // Aggressive Sanitization
+    let cleanTranscript = Array.isArray(transcriptText) 
+        ? transcriptText.join('\n') 
+        : String(transcriptText);
+
+    // Remove leading/trailing brackets and quotes if they were stringified as a whole
+    cleanTranscript = cleanTranscript.trim()
+        .replace(/^\[['"]?/, '')    // Remove starting [' or [" or [
+        .replace(/['"]?\]$/, '')    // Remove ending '] or "] or ]
+        .replace(/\\n/g, '\n');     // Convert literal \n to real newlines
+
+    const concatenated_transcript = cleanTranscript;
+    const transcript = [{ role: 'system', content: cleanTranscript }];
     
     const recording_url = req.body.recording_url || call_report.recording_url || req.body.recording;
     const call_length = req.body.call_duration || req.body.call_length || req.body.duration || call_report.duration;
