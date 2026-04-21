@@ -8,7 +8,6 @@ const logger = require('../utils/logger');
 
 /**
  * Download file from Supabase Storage and process it into leads.
- * Called by the upload worker (or synchronous fallback).
  */
 async function processUploadFromStorage(batchId, filePath, filename, userId, campaignId = null) {
     const updateBatch = async (fields) => {
@@ -16,8 +15,6 @@ async function processUploadFromStorage(batchId, filePath, filename, userId, cam
     };
 
     try {
-        // 1. Download file from Supabase Storage
-        logger.info(`[lead-service] Downloading file: ${filePath}`);
         const { data: fileData, error: downloadErr } = await supabase.storage
             .from('lead_uploads')
             .download(filePath);
@@ -27,12 +24,7 @@ async function processUploadFromStorage(batchId, filePath, filename, userId, cam
         }
 
         const buffer = Buffer.from(await fileData.arrayBuffer());
-        logger.info(`[lead-service] Downloaded ${buffer.length} bytes`);
-
-        // 2. Parse file
         const rawRows = parseFile(buffer, filename);
-        logger.info(`[lead-service] Parsed ${rawRows.length} rows from "${filename}"`);
-
         await updateBatch({ total_rows: rawRows.length });
 
         if (rawRows.length === 0) {
@@ -40,18 +32,9 @@ async function processUploadFromStorage(batchId, filePath, filename, userId, cam
             return { total_parsed: 0, valid: 0, duplicates_skipped: 0, inserted: 0 };
         }
 
-        // 3. Validate rows
         const validRows = rawRows.map(validateLeadRow).filter(Boolean);
-        logger.info(`[lead-service] ${validRows.length} valid rows out of ${rawRows.length}`);
-
         await updateBatch({ valid_rows: validRows.length });
 
-        if (validRows.length === 0) {
-            await updateBatch({ status: 'completed', inserted_rows: 0 });
-            return { total_parsed: rawRows.length, valid: 0, duplicates_skipped: 0, inserted: 0 };
-        }
-
-        // 4. Deduplicate within file
         const seenEmails = new Set();
         const internalDeduped = [];
         for (const row of validRows) {
@@ -63,29 +46,21 @@ async function processUploadFromStorage(batchId, filePath, filename, userId, cam
             internalDeduped.push(row);
         }
 
-        // 5. Deduplicate against existing leads in DB
-        const uniqueRows = await deduplicateAgainstExisting(internalDeduped, userId);
-        const duplicateCount = validRows.length - uniqueRows.length;
-        logger.info(`[lead-service] ${uniqueRows.length} unique leads (${duplicateCount} duplicates skipped)`);
+        logger.info(`[service:lead] Upserting ${internalDeduped.length} leads for campaign: ${campaignId}`);
 
-        if (uniqueRows.length === 0) {
-            await updateBatch({ status: 'completed', inserted_rows: 0, duplicate_count: duplicateCount });
-            return { total_parsed: rawRows.length, valid: validRows.length, duplicates_skipped: duplicateCount, inserted: 0 };
-        }
-
-        // 6. Normalize + calculate fit scores + prepare for insert
-        const leadsToInsert = uniqueRows.map(row => {
-            // Normalize
+        const leadsToPersist = internalDeduped.map(row => {
             const email = row.email ? row.email.toLowerCase().trim() : null;
             const phone = row.phone ? normalizePhone(row.phone) : null;
             const name = row.name ? row.name.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ') : 'Unknown';
-
-            const normalized = { ...row, email, phone, name };
-            const fitScore = calculateFitScore(normalized);
+            const fitScore = calculateFitScore({ ...row, email, phone, name });
 
             return {
-                ...normalized,
+                ...row, 
+                email, 
+                phone, 
+                name,
                 user_id: userId,
+                campaign_id: campaignId, // Keep for backward compat, but we rely on join table
                 fit_score: fitScore,
                 intent_score: 0,
                 final_score: fitScore,
@@ -93,99 +68,106 @@ async function processUploadFromStorage(batchId, filePath, filename, userId, cam
                 status: 'new',
                 cleaned: true,
                 source: row.source || 'csv_upload',
-                campaign_id: campaignId,
-                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+                created_at: new Date().toISOString(), 
             };
         });
 
-        // 7. Bulk insert in batches of 500
-        let insertedCount = 0;
-        const insertedLeadIds = [];
-        const batchSize = 500;
-
-        for (let i = 0; i < leadsToInsert.length; i += batchSize) {
-            const batch = leadsToInsert.slice(i, i + batchSize);
+        let persistedCount = 0;
+        const batchSize = 100; // Smaller batches for better error tracking
+        for (let i = 0; i < leadsToPersist.length; i += batchSize) {
+            const batch = leadsToPersist.slice(i, i + batchSize);
             const { data, error } = await supabase
                 .from('leads')
-                .upsert(batch, {
-                    onConflict: 'email,user_id',
-                    ignoreDuplicates: true,
+                .upsert(batch, { 
+                    onConflict: 'email,user_id', 
+                    ignoreDuplicates: false
                 })
                 .select('id');
 
             if (error) {
-                logger.error(`Batch insert error at offset ${i}:`, error.message);
+                logger.error(`[service:lead] Upsert batch error: ${error.message}`);
                 continue;
             }
 
-            insertedCount += (data?.length || 0);
-            if (data) insertedLeadIds.push(...data.map(d => d.id));
-            logger.debug(`Inserted batch ${Math.floor(i / batchSize) + 1}: ${data?.length || 0} leads`);
+            if (data && campaignId) {
+                // Bulk insert into campaign_leads mapping table
+                const mappingBatch = data.map(lead => ({
+                    campaign_id: campaignId,
+                    lead_id: lead.id
+                }));
+                const { error: mappingErr } = await supabase
+                    .from('campaign_leads')
+                    .upsert(mappingBatch, { onConflict: 'campaign_id,lead_id', ignoreDuplicates: true });
+                
+                if (mappingErr) {
+                    logger.error(`[service:lead] Failed to map leads to campaign: ${mappingErr.message}`);
+                }
+            }
+
+            persistedCount += (data?.length || 0);
         }
 
-        // 8. Update batch status
-        await updateBatch({
-            status: 'completed',
-            inserted_rows: insertedCount,
-            duplicate_count: duplicateCount,
-        });
-
-        logger.info(`[lead-service] Upload complete: ${insertedCount} inserted, ${duplicateCount} duplicates`);
-
-        // Step 9 (Auto-trigger) has been removed. 
-        // Calls now happen ONLY when a campaign is manually launched.
-
-        return {
-            total_parsed: rawRows.length,
-            valid: validRows.length,
-            duplicates_skipped: duplicateCount,
-            inserted: insertedCount,
-        };
+        await updateBatch({ status: 'completed', inserted_rows: persistedCount });
+        return { total_parsed: rawRows.length, inserted: persistedCount, reassigned: persistedCount };
     } catch (err) {
-        logger.error(`[lead-service] Upload processing failed:`, err.message);
         await updateBatch({ status: 'failed' });
         throw err;
     }
 }
 
 /**
- * Fetch paginated leads for a user.
+ * Fetch paginated leads with explicit campaign join.
  */
-async function getLeads(userId, { page = 1, limit = 20, classification, search } = {}) {
+async function getLeads(userId, { page = 1, limit = 20, classification, search, campaign_id } = {}) {
+    // Note: Using explicit relationship name 'fk_leads_campaign' to resolve ambiguity
     let query = supabase
         .from('leads')
-        .select('*', { count: 'exact' })
+        .select('*, campaigns!fk_leads_campaign(name)', { count: 'exact' })
         .eq('user_id', userId)
         .order('created_at', { ascending: false })
         .range((page - 1) * limit, page * limit - 1);
 
-    if (classification) {
-        query = query.eq('classification', classification);
+    if (classification) query = query.eq('classification', classification);
+    if (campaign_id) {
+        query = query.select('*, campaigns!fk_leads_campaign(name), campaign_leads!inner(campaign_id)', { count: 'exact' });
+        query = query.eq('campaign_leads.campaign_id', campaign_id);
     }
-
-    if (search) {
-        query = query.or(`name.ilike.%${search}%,company.ilike.%${search}%,email.ilike.%${search}%`);
-    }
+    if (search) query = query.or(`name.ilike.%${search}%,company.ilike.%${search}%,email.ilike.%${search}%`);
 
     const { data, error, count } = await query;
-
     if (error) throw new Error(`Failed to fetch leads: ${error.message}`);
 
+    const leads = (data || []).map(l => {
+        // PostgREST returns joined data under the table name regardless of '!' specification
+        const c = l.campaigns;
+        let cName = 'No Campaign';
+        if (c) {
+            if (Array.isArray(c)) {
+                if (c.length > 0) cName = c[0].name;
+            } else {
+                cName = c.name;
+            }
+        }
+        return { ...l, campaign_name: cName };
+    });
+
     return {
-        leads: data,
-        total: count,
+        leads,
+        total: count || 0,
         page,
         limit,
-        totalPages: Math.ceil(count / limit),
+        totalPages: Math.ceil((count || 0) / limit),
     };
 }
+
 /**
- * Fetch a single lead by ID and verify ownership.
+ * Fetch a single lead by ID with explicit campaign join.
  */
 async function getLeadById(leadId, userId) {
     const { data, error } = await supabase
         .from('leads')
-        .select('*')
+        .select('*, campaigns!fk_leads_campaign(name)')
         .eq('id', leadId)
         .eq('user_id', userId)
         .single();
@@ -196,29 +178,26 @@ async function getLeadById(leadId, userId) {
         throw err;
     }
 
-    return data;
+    let cName = 'No Campaign';
+    const c = data.campaigns;
+    if (c) {
+        if (Array.isArray(c)) {
+            if (c.length > 0) cName = c[0].name;
+        } else {
+            cName = c.name;
+        }
+    }
+
+    return { ...data, campaign_name: cName };
 }
 
-/**
- * Fetch a single lead by normalized phone number.
- */
 async function getLeadByPhone(phone) {
     if (!phone) return null;
     const normalized = normalizePhone(phone);
-    
-    const { data } = await supabase
-        .from('leads')
-        .select('*')
-        .eq('phone', normalized)
-        .limit(1)
-        .maybeSingle();
-
+    const { data } = await supabase.from('leads').select('*').eq('phone', normalized).limit(1).maybeSingle();
     return data;
 }
 
-/**
- * Update lead scores in the database.
- */
 async function updateLeadScores(leadId, scores) {
     const { error } = await supabase
         .from('leads')
@@ -230,8 +209,7 @@ async function updateLeadScores(leadId, scores) {
             scored_at: new Date().toISOString(),
         })
         .eq('id', leadId);
-
-    if (error) throw new Error(`Failed to update lead scores: ${error.message}`);
+    if (error) throw new Error(error.message);
 }
 
 module.exports = { 

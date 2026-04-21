@@ -102,13 +102,14 @@ const getUploadStatus = asyncHandler(async (req, res) => {
  * Fetch paginated leads.
  */
 const getLeads = asyncHandler(async (req, res) => {
-    const { page, limit, classification, search } = req.query;
+    const { page, limit, classification, search, campaign_id } = req.query;
 
     const result = await leadService.getLeads(req.user.id, {
         page: parseInt(page) || 1,
         limit: parseInt(limit) || 20,
         classification,
         search,
+        campaign_id,
     });
 
     res.json(result);
@@ -251,7 +252,7 @@ const updateLead = asyncHandler(async (req, res) => {
     await leadService.getLeadById(leadId, req.user.id);
 
     // Whitelist editable fields
-    const allowed = ['name', 'email', 'phone', 'company', 'industry', 'title', 'location', 'source', 'campaign_id'];
+    const allowed = ['name', 'email', 'phone', 'company', 'industry', 'job_title', 'location', 'source', 'campaign_id', 'classification'];
     const updates = {};
     for (const key of allowed) {
         if (req.body[key] !== undefined) updates[key] = req.body[key] || null;
@@ -262,6 +263,10 @@ const updateLead = asyncHandler(async (req, res) => {
     }
 
     updates.updated_at = new Date().toISOString();
+    
+    // We retain campaign_id on the leads table for legacy backwards compatibility,
+    // but the actual rendering queries use the `campaign_leads` join table!
+    const updatedCampaignId = updates.campaign_id;
 
     const { data, error } = await supabase
         .from('leads')
@@ -273,6 +278,26 @@ const updateLead = asyncHandler(async (req, res) => {
 
     if (error) throw new Error(`Failed to update lead: ${error.message}`);
 
+    // Synchronize many-to-many relationship mapping if campaign_id was updated
+    if (updatedCampaignId !== undefined) {
+        if (updatedCampaignId) {
+            const { error: mappingErr } = await supabase
+                .from('campaign_leads')
+                .upsert(
+                    [{ campaign_id: updatedCampaignId, lead_id: leadId }],
+                    { onConflict: 'campaign_id,lead_id', ignoreDuplicates: true }
+                );
+            if (mappingErr) logger.error(`Failed to map lead ${leadId} to campaign ${updatedCampaignId}: ${mappingErr.message}`);
+        } else {
+             // De-associate if it was cleared out intentionally
+             const { error: clearErr } = await supabase
+                 .from('campaign_leads')
+                 .delete()
+                 .eq('lead_id', leadId);
+             if (clearErr) logger.error(`Failed to clear mappings for lead ${leadId}: ${clearErr.message}`);
+        }
+    }
+
     res.json(data);
 });
 
@@ -282,7 +307,7 @@ const updateLead = asyncHandler(async (req, res) => {
  */
 const createLead = asyncHandler(async (req, res) => {
     const supabase = require('../config/supabase');
-    const { name, email, phone, company, industry, title, location, source } = req.body;
+    const { name, email, phone, company, industry, job_title, location, source } = req.body;
 
     if (!name) {
         return res.status(400).json({ error: 'name is required' });
@@ -296,7 +321,7 @@ const createLead = asyncHandler(async (req, res) => {
         phone: phone || null,
         company: company || null,
         industry: industry || null,
-        title: title || null,
+        job_title: job_title || null,
         location: location || null,
         source: source || 'manual',
         classification: 'cold',

@@ -37,8 +37,8 @@ async function getCampaign(req, res) {
         // Fetch stats if needed
         const { count: leadsCount } = await supabase
             .from('leads')
-            .select('*', { count: 'exact', head: true })
-            .eq('campaign_id', id);
+            .select('*, campaign_leads!inner(campaign_id)', { count: 'exact', head: true })
+            .eq('campaign_leads.campaign_id', id);
 
         res.json({ campaign, stats: { leadsCount } });
     } catch (err) {
@@ -173,6 +173,7 @@ module.exports = {
     getCampaignLeads,
     getCampaignCalls,
     getCampaignAnalytics,
+    initiateBulkCalls,
 };
 
 // ─── POST /api/campaigns/:id/launch ───────────────────────────
@@ -196,8 +197,8 @@ async function launchCampaign(req, res) {
         // Fetch all leads assigned to this campaign that have a phone number
         const { data: leads, error: leadsErr } = await supabase
             .from('leads')
-            .select('id, name, phone, company')
-            .eq('campaign_id', id)
+            .select('id, name, phone, company, campaign_leads!inner(campaign_id)')
+            .eq('campaign_leads.campaign_id', id)
             .eq('user_id', req.user.id)
             .not('phone', 'is', null);
 
@@ -216,6 +217,7 @@ async function launchCampaign(req, res) {
                     phone: lead.phone,
                     campaign_id: id,
                     prompt_script: campaign.prompt_script || null,
+                    bypassDuplicateCheck: true,
                 });
                 queued++;
             } catch (qErr) {
@@ -288,7 +290,7 @@ async function resumeCampaign(req, res) {
     }
 }
 
-// ─── GET /api/campaigns/:id/leads ─────────────────────────────
+// ─── GET /api/campaigns/:id/leads ─────────────────
 async function getCampaignLeads(req, res) {
     try {
         const { id } = req.params;
@@ -301,8 +303,8 @@ async function getCampaignLeads(req, res) {
 
         const { data: leads, error } = await supabase
             .from('leads')
-            .select('id, name, phone, company, industry, classification, fit_score, intent_score, final_score, status, created_at')
-            .eq('campaign_id', id)
+            .select('id, name, phone, company, industry, classification, fit_score, intent_score, final_score, status, created_at, campaign_leads!inner(campaign_id)')
+            .eq('campaign_leads.campaign_id', id)
             .eq('user_id', req.user.id)
             .order('final_score', { ascending: false });
 
@@ -311,18 +313,15 @@ async function getCampaignLeads(req, res) {
         // For each lead, get latest call status from conversations, but only after campaign launch
         const leadIds = (leads || []).map(l => l.id);
         let callMap = {};
-        if (leadIds.length > 0) {
-            let query = supabase
+        if (leadIds.length > 0 && campaign?.launched_at) {
+            // Strict isolation: ONLY show calls explicitly tagged with this campaign_id
+            const { data: convos } = await supabase
                 .from('conversations')
-                .select('lead_id, status, created_at, metadata')
+                .select('lead_id, status, created_at, metadata, campaign_id')
                 .eq('channel', 'call')
-                .in('lead_id', leadIds);
-            
-            if (campaign?.launched_at) {
-                query = query.gte('created_at', campaign.launched_at);
-            }
-
-            const { data: convos } = await query.order('created_at', { ascending: false });
+                .in('lead_id', leadIds)
+                .eq('campaign_id', id)
+                .order('created_at', { ascending: false });
 
             if (convos) {
                 for (const c of convos) {
@@ -352,8 +351,8 @@ async function getCampaignCalls(req, res) {
         // Get all leads in campaign, then their conversations
         const { data: leads, error: leadsErr } = await supabase
             .from('leads')
-            .select('id, name, phone, company, classification')
-            .eq('campaign_id', id)
+            .select('id, name, phone, company, classification, campaign_leads!inner(campaign_id)')
+            .eq('campaign_leads.campaign_id', id)
             .eq('user_id', req.user.id);
 
         if (leadsErr) throw leadsErr;
@@ -363,12 +362,24 @@ async function getCampaignCalls(req, res) {
         const leadIds = leads.map(l => l.id);
         const leadMap = Object.fromEntries(leads.map(l => [l.id, l]));
 
-        const { data: convos, error: convosErr } = await supabase
+        // Fetch campaign to get launch time
+        const { data: campaign } = await supabase.from('campaigns').select('launched_at').eq('id', id).single();
+
+        let query = supabase
             .from('conversations')
             .select('*')
             .eq('channel', 'call')
-            .in('lead_id', leadIds)
-            .order('created_at', { ascending: false });
+            .in('lead_id', leadIds);
+        
+        if (campaign?.launched_at) {
+            // Strict isolation: ONLY show calls explicitly tagged with this campaign_id
+            query = query.eq('campaign_id', id);
+        } else {
+             // If not launched, show no calls
+            return res.json({ calls: [], total: 0 });
+        }
+
+        const { data: convos, error: convosErr } = await query.order('created_at', { ascending: false });
 
         if (convosErr) throw convosErr;
 
@@ -401,8 +412,8 @@ async function getCampaignAnalytics(req, res) {
 
         const { data: leads } = await supabase
             .from('leads')
-            .select('id, classification, fit_score, intent_score, final_score')
-            .eq('campaign_id', id)
+            .select('id, classification, fit_score, intent_score, final_score, campaign_leads!inner(campaign_id)')
+            .eq('campaign_leads.campaign_id', id)
             .eq('user_id', req.user.id);
 
         const leadIds = (leads || []).map(l => l.id);
@@ -460,6 +471,81 @@ async function getCampaignAnalytics(req, res) {
         });
     } catch (err) {
         logger.error(`Error fetching campaign analytics ${req.params.id}: ${err.message}`);
+        res.status(500).json({ error: err.message });
+    }
+}
+
+// ─── POST /api/campaigns/:id/initiate-calls ──────────────────
+async function initiateBulkCalls(req, res) {
+    try {
+        const { id } = req.params;
+        const { leadIds } = req.body;
+
+        if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
+            return res.status(400).json({ error: 'No leadIds provided' });
+        }
+
+        // Verify ownership
+        const { data: campaign, error: campErr } = await supabase
+            .from('campaigns')
+            .select('*')
+            .eq('id', id)
+            .eq('user_id', req.user.id)
+            .single();
+
+        if (campErr || !campaign) return res.status(404).json({ error: 'Campaign not found' });
+
+        // Fetch selected leads assigned to this campaign
+        const { data: leads, error: leadsErr } = await supabase
+            .from('leads')
+            .select('id, name, phone, company, campaign_leads!inner(campaign_id)')
+            .eq('campaign_leads.campaign_id', id)
+            .eq('user_id', req.user.id)
+            .in('id', leadIds)
+            .not('phone', 'is', null);
+
+        if (leadsErr) throw leadsErr;
+
+        if (!leads || leads.length === 0) {
+            return res.status(400).json({ error: 'Selected leads not found or have no phone numbers.' });
+        }
+
+        // Queue one ai-call-initiate job per selected lead
+        let queued = 0;
+        for (const lead of leads) {
+            try {
+                await enqueue('ai-call-initiate', {
+                    lead_id: lead.id,
+                    phone: lead.phone,
+                    campaign_id: id,
+                    prompt_script: campaign.prompt_script || null,
+                    bypassDuplicateCheck: true,
+                });
+                queued++;
+            } catch (qErr) {
+                logger.warn(`Failed to queue callback for lead ${lead.id}: ${qErr.message}`);
+            }
+        }
+
+        // Update campaign status to running and ensure launched_at is set
+        const campUpdates = { status: 'running', updated_at: new Date().toISOString() };
+        if (!campaign.launched_at) {
+            campUpdates.launched_at = new Date().toISOString();
+        }
+
+        await supabase
+            .from('campaigns')
+            .update(campUpdates)
+            .eq('id', id);
+
+        logger.info(`Manual callback initiated for ${queued} leads in campaign ${id}`);
+        res.json({
+            success: true,
+            message: `${queued} callbacks queued successfully.`,
+            jobs_queued: queued,
+        });
+    } catch (err) {
+        logger.error(`Error initiating callbacks for campaign ${req.params.id}: ${err.message}`);
         res.status(500).json({ error: err.message });
     }
 }

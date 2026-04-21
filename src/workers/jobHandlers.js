@@ -11,7 +11,7 @@ async function handleUploadProcessing(payload) {
 
     logger.info(`[handler:upload] Processing batch=${batch_id}, file=${filename}`);
     const result = await processUploadFromStorage(batch_id, file_path, filename, user_id, campaign_id);
-    logger.info(`[handler:upload] Done: ${result.inserted} inserted, ${result.duplicates_skipped} deduped`);
+    logger.info(`[handler:upload] Done: ${result.inserted} total, ${result.reassigned || 0} reassigned`);
 
     return result;
 }
@@ -221,9 +221,9 @@ async function handleNotificationDispatch(payload) {
 async function handleAiCallInitiate(payload) {
     const supabase = require('../config/supabase');
     const voiceService = require('../services/voiceService');
-    const { lead_id, campaign_id, prompt_script: payloadScript } = payload;
+    const { lead_id, campaign_id, prompt_script: payloadScript, bypassDuplicateCheck } = payload;
 
-    logger.info(`[handler:ai-call] Initiating AI call for lead ${lead_id}`);
+    logger.info(`[handler:ai-call] Processing initiation for lead ${lead_id}${bypassDuplicateCheck ? ' (BYPASS ACTIVE)' : ''}`);
 
     // 1. Fetch lead
     const { data: lead, error } = await supabase
@@ -257,11 +257,16 @@ async function handleAiCallInitiate(payload) {
         }
     }
 
-    // 4. Duplicate prevention — check if a call already exists
-    const callExists = await voiceService.hasExistingCall(lead_id);
-    if (callExists) {
-        logger.info(`[handler:ai-call] Call already exists for lead ${lead_id}, skipping`);
-        return { skipped: true, reason: 'call_already_exists' };
+    // 4. Duplicate prevention — skip check if bypass flag is present (manual triggers)
+    const bypass = (payload.bypassDuplicateCheck === true || payload.bypassDuplicateCheck === 'true');
+    if (!bypass) {
+        const callExists = await voiceService.hasExistingCall(lead_id);
+        if (callExists) {
+            logger.info(`[handler:ai-call] Call already exists for lead ${lead_id}, skipping`);
+            return { skipped: true, reason: 'call_already_exists' };
+        }
+    } else {
+        logger.info(`[handler:ai-call] Bypassing duplicate check for manual retry on lead ${lead_id}`);
     }
 
     // 5. Resolve custom prompt (payload > campaign DB > dynamic generator > default)
@@ -340,11 +345,12 @@ async function handleAiCallInitiate(payload) {
     const result = await voiceService.initiateCall(lead, {
         task: customTask,
         firstSentence: firstSentence,
+        campaignId: effectiveCampaignId,
     });
 
     // 7. Store conversation entry for the initiated call
     try {
-        await voiceService.storeCallConversation(lead_id, result.call_id, 'initiated');
+        await voiceService.storeCallConversation(lead_id, result.call_id, 'initiated', {}, effectiveCampaignId);
     } catch (err) {
         logger.warn(`[handler:ai-call] Failed to store call conversation:`, err.message);
     }

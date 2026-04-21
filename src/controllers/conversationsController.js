@@ -12,17 +12,22 @@ const getConversations = asyncHandler(async (req, res) => {
         return res.status(400).json({ error: 'lead_id query parameter is required' });
     }
 
-    const { data: messages, error } = await supabase
-        .from('conversations')
-        .select('*')
-        .eq('lead_id', lead_id)
-        .order('created_at', { ascending: true });
+    const [
+        { data: messages, error: msgErr },
+        { data: lead, error: leadErr }
+    ] = await Promise.all([
+        supabase.from('conversations').select('*').eq('lead_id', lead_id).order('created_at', { ascending: true }),
+        supabase.from('leads').select('name, campaigns(name)').eq('id', lead_id).single()
+    ]);
         
-    if (error) {
-        throw new Error(`Failed to fetch conversation: ${error.message}`);
-    }
+    if (msgErr) throw new Error(`Failed to fetch conversation: ${msgErr.message}`);
 
-    res.json({ lead_id, messages: messages || [] });
+    res.json({ 
+        lead_id, 
+        messages: messages || [],
+        lead_name: lead?.name,
+        campaign_name: lead?.campaigns?.name || 'No Campaign'
+    });
 });
 
 /**

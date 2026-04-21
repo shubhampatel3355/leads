@@ -3,10 +3,22 @@ const supabase = require('../config/supabase');
 const logger = require('../utils/logger');
 
 /**
- * Initiate a voice call via OmniDimension AI.
- * Uses the Variable Replacement System (call_context) for dynamic scripts.
+ * Normalize phone numbers to ensure consistent lookups.
+ * Removes non-numeric characters and ensures a leading '+' if missing.
  */
-async function initiateCall(lead, { task, voice = 'maya', firstSentence } = {}) {
+function normalizePhone(phone) {
+    if (!phone) return null;
+    // Remove all non-numeric characters
+    const digits = String(phone).replace(/\D/g, '');
+    if (!digits) return null;
+    // OmniDimension and most VoIP providers require leading + for international dialling
+    return `+${digits}`;
+}
+
+/**
+ * Initiate a voice call via OmniDimension AI.
+ */
+async function initiateCall(lead, { task, voice = 'maya', firstSentence, campaignId } = {}) {
     if (!lead.phone) {
         throw Object.assign(new Error('Lead has no phone number'), { status: 400 });
     }
@@ -17,17 +29,19 @@ async function initiateCall(lead, { task, voice = 'maya', firstSentence } = {}) 
 
     // Prepare override payload via call_context variables
     // IMPORTANT: Dashboard must have placeholders like [welcome_message] and [custom_script]
+    const formattedPhone = normalizePhone(lead.phone);
+    
+    // Prepare override payload via call_context variables
     const payload = {
         agent_id: parseInt(env.omniDimension.agentId, 10) || env.omniDimension.agentId,
-        to_number: lead.phone, // API uses to_number, not phone_number sometimes
-        phone_number: lead.phone, // Keeping phone_number for compatibility
+        to_number: formattedPhone, 
+        phone_number: formattedPhone,
         webhook_url: env.omniDimension.webhookUrl,
         ...(env.omniDimension.fromNumberId && { from_number_id: parseInt(env.omniDimension.fromNumberId, 10) || env.omniDimension.fromNumberId }),
         call_context: {
             lead_id: lead.id,
             name: lead.name,
             company: lead.company,
-            // These match the [variables] in the OmniDimension Dashboard
             welcome_message: firstSentence || '', 
             custom_script: task || '',
         }
@@ -37,7 +51,8 @@ async function initiateCall(lead, { task, voice = 'maya', firstSentence } = {}) 
         logger.warn(`[voice] No dynamic task provided for lead ${lead.id}. AI will fall back to static dashboard instructions.`);
     }
 
-    logger.info(`[voice] Dispatching call via OmniDimension to lead ${lead.id} (${lead.phone})`);
+    logger.info(`[voice] Dispatching call for lead ${lead.id} to: ${formattedPhone}`);
+    logger.debug(`[voice:payload] SENDING:`, JSON.stringify({ ...payload, to_number: '***' })); // Redacting phone in debug if needed, but logging structure
     
     try {
         const response = await fetch('https://backend.omnidim.io/api/v1/calls/dispatch', {
@@ -51,28 +66,31 @@ async function initiateCall(lead, { task, voice = 'maya', firstSentence } = {}) 
 
         if (!response.ok) {
             const errBody = await response.text();
+            logger.error(`[voice:error] OmniDimension API rejected call (Status: ${response.status}):`, errBody);
             throw new Error(`OmniDimension AI call failed (${response.status}): ${errBody}`);
         }
 
         const data = await response.json();
         
         // Handle OmniDimension's potentially varied response structure
-        const returnedCallId = data.call_id || data.id || data.callLogId || data.dispatch_id || (data.data && (data.data.id || data.data.call_id));
+        // Added more variants for future-proofing
+        const returnedCallId = data.call_id || data.id || data.callLogId || data.dispatch_id || data.requestId ||
+                             (data.data && (data.data.id || data.data.call_id || data.data.dispatch_id || data.data.requestId));
         
-        // CRITICAL DEBUG: Log the full data to see what we are getting
-        logger.info(`[voice:DEBUG] Full response from OmniDimension dispatch:`, JSON.stringify(data));
+        logger.info(`[voice:DEBUG] Dispatch response for lead ${lead.id}:`, JSON.stringify(data));
 
         if (!returnedCallId) {
-            logger.error(`[voice:initiate] OmniDimension responded successfully but no call_id was found in payload. SEE DEBUG LOG ABOVE.`);
+            logger.error(`[voice:initiate] OmniDimension responded successfully but no call_id was found.`);
             throw new Error('Failed to retrieve call_id from OmniDimension response');
         }
 
-        logger.info(`OmniDimension AI call initiated for lead ${lead.id}, ID: ${returnedCallId}`);
+        logger.info(`OmniDimension AI call initiated for lead ${lead.id}, External ID: ${returnedCallId}`);
 
         // Store call record
         const { error: insertErr } = await supabase.from('calls').insert({
             lead_id: lead.id,
             external_call_id: String(returnedCallId), // Ensure it's a string for DB
+            campaign_id: campaignId || lead.campaign_id || null,
             status: 'initiated',
             created_at: new Date().toISOString(),
         });
@@ -126,25 +144,38 @@ async function isCallProcessed(callId) {
 }
 
 /**
- * Get the lead_id for a call.
+ * Get the lead_id and campaign_id for a call.
  */
 async function getLeadIdForCall(callId) {
     const { data } = await supabase
         .from('calls')
-        .select('lead_id')
+        .select('lead_id, campaign_id')
         .eq('external_call_id', callId)
         .single();
 
-    return data?.lead_id || null;
+    return { lead_id: data?.lead_id || null, campaign_id: data?.campaign_id || null };
 }
 
 /**
  * Find internal lead ID by normalized phone number.
  */
 async function getLeadIdByPhone(phone) {
+    if (!phone) return null;
     const { getLeadByPhone } = require('./leadService');
-    const lead = await getLeadByPhone(phone);
-    return lead?.id || null;
+    
+    // 1. Try exact match
+    let lead = await getLeadByPhone(phone);
+    if (lead) return lead.id;
+
+    // 2. Try normalized numeric match (strip +, spaces, etc.)
+    const cleaned = normalizePhone(phone);
+    const { data: leads } = await supabase
+        .from('leads')
+        .select('id, phone');
+    
+    // Search for a match ignoring non-numeric chars
+    const match = leads?.find(l => normalizePhone(l.phone) === cleaned);
+    return match?.id || null;
 }
 
 /**
@@ -179,9 +210,10 @@ async function hasExistingCall(leadId) {
 /**
  * Store a conversation entry for an AI call event.
  */
-async function storeCallConversation(leadId, callId, status, extra = {}) {
+async function storeCallConversation(leadId, callId, status, extra = {}, campaignId = null) {
     const record = {
         lead_id: leadId,
+        campaign_id: campaignId,
         direction: 'outbound',
         channel: 'call',
         body: extra.body || 'Outbound AI voice call initiated.',
@@ -245,4 +277,23 @@ async function updateCallConversationWithTranscript(callId, extra = {}) {
     return data;
 }
 
-module.exports = { initiateCall, storeTranscript, isCallProcessed, getLeadIdForCall, hasExistingCall, storeCallConversation, updateCallConversationWithTranscript, getLeadIdByPhone, createCallRecord };
+/**
+ * Recover the most recent outbound call campaign ID for a lead
+ * Useful when the call ID changes between initiation and the webhook
+ */
+async function getLatestCampaignIdForLead(leadId) {
+    if (!leadId) return null;
+    const { data } = await supabase
+        .from('conversations')
+        .select('campaign_id')
+        .eq('lead_id', leadId)
+        .eq('direction', 'outbound')
+        .eq('channel', 'call')
+        .not('campaign_id', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+    return data?.campaign_id || null;
+}
+
+module.exports = { initiateCall, storeTranscript, isCallProcessed, getLeadIdForCall, hasExistingCall, storeCallConversation, updateCallConversationWithTranscript, getLeadIdByPhone, createCallRecord, getLatestCampaignIdForLead };

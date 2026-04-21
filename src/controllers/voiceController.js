@@ -48,13 +48,14 @@ const callEndedWebhook = asyncHandler(async (req, res) => {
     logger.info(`[voice:webhook] Incoming OmniDimension payload:`, JSON.stringify(req.body));
 
     // Standard OmniDimension payload properties
-    const call_id = req.body.call_id || req.body.id;
+    // Adding more variants for IDs and Transcript fields
+    const call_id = req.body.call_id || req.body.id || req.body.dispatch_id || req.body.callLogId;
     const status = req.body.call_status || req.body.status || 'completed';
-    const phone_number = req.body.to_number || req.body.phone_number; // The lead's phone
+    const phone_number = req.body.to_number || req.body.phone_number || req.body.customer_number; 
     
-    // OmniDimension nests details in call_report
-    const call_report = req.body.call_report || {};
-    const transcriptText = call_report.full_conversation || req.body.transcript || '';
+    // OmniDimension nests details in call_report or conversation_details
+    const call_report = req.body.call_report || req.body.conversation_details || {};
+    const transcriptText = call_report.full_conversation || call_report.transcript || req.body.transcript || req.body.text || '';
     
     // Aggressive Sanitization
     let cleanTranscript = Array.isArray(transcriptText) 
@@ -70,9 +71,9 @@ const callEndedWebhook = asyncHandler(async (req, res) => {
     const concatenated_transcript = cleanTranscript;
     const transcript = [{ role: 'system', content: cleanTranscript }];
     
-    const recording_url = req.body.recording_url || call_report.recording_url || req.body.recording;
-    const call_length = req.body.call_duration || req.body.call_length || req.body.duration || call_report.duration;
-    const summary = call_report.summary || req.body.summary || req.body.call_summary;
+    const recording_url = req.body.recording_url || call_report.recording_url || req.body.recording || req.body.audio_url;
+    const call_length = req.body.call_duration || req.body.call_length || req.body.duration || call_report.duration || call_report.call_duration;
+    const summary = call_report.summary || req.body.summary || req.body.call_summary || call_report.call_summary;
 
     if (!call_id) {
         logger.warn('[voice:webhook] Received webhook without a valid call_id.');
@@ -80,7 +81,7 @@ const callEndedWebhook = asyncHandler(async (req, res) => {
     }
 
     // 1. Try to find the lead by Call ID first
-    let leadId = await voiceService.getLeadIdForCall(call_id);
+    let { lead_id: leadId, campaign_id: campaignId } = await voiceService.getLeadIdForCall(call_id);
     let matchMethod = 'ID';
 
     // 2. FALLBACK: If not found by ID, try looking up by phone number
@@ -91,6 +92,11 @@ const callEndedWebhook = asyncHandler(async (req, res) => {
         if (leadId) {
             matchMethod = 'Phone';
             logger.info(`[voice:webhook] Found lead ${leadId} by phone number fallback. Repairing record...`);
+            
+            // Recover recent campaign ID 
+            const recentCampaignId = await voiceService.getLatestCampaignIdForLead(leadId);
+            if (recentCampaignId) campaignId = recentCampaignId;
+
             // Repair the record so future lookups by ID work
             await voiceService.createCallRecord(leadId, call_id);
         }
@@ -123,7 +129,7 @@ const callEndedWebhook = asyncHandler(async (req, res) => {
                     body: concatenated_transcript,
                     recording_url,
                     call_length
-                });
+                }, campaignId);
             } else {
                 logger.info(`[voice:webhook] Successfully updated conversation timeline for ${call_id}.`);
             }
@@ -134,7 +140,7 @@ const callEndedWebhook = asyncHandler(async (req, res) => {
                 body: concatenated_transcript,
                 recording_url,
                 call_length
-            });
+            }, campaignId);
         }
 
         // Queue transcript analysis job
