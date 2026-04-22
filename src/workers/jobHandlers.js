@@ -258,15 +258,16 @@ async function handleAiCallInitiate(payload) {
     }
 
     // 4. Duplicate prevention — skip check if bypass flag is present (manual triggers)
+    // Refactored to be campaign-aware to support concurrent campaigns
     const bypass = (payload.bypassDuplicateCheck === true || payload.bypassDuplicateCheck === 'true');
     if (!bypass) {
-        const callExists = await voiceService.hasExistingCall(lead_id);
+        const callExists = await voiceService.hasExistingCall(lead_id, effectiveCampaignId);
         if (callExists) {
-            logger.info(`[handler:ai-call] Call already exists for lead ${lead_id}, skipping`);
+            logger.info(`[handler:ai-call] Call already exists for lead ${lead_id} in campaign ${effectiveCampaignId || 'global'}, skipping`);
             return { skipped: true, reason: 'call_already_exists' };
         }
     } else {
-        logger.info(`[handler:ai-call] Bypassing duplicate check for manual retry on lead ${lead_id}`);
+        logger.info(`[handler:ai-call] Bypassing duplicate check for manual retry on lead ${lead_id} (Campaign: ${effectiveCampaignId || 'none'})`);
     }
 
     // 5. Resolve custom prompt (payload > campaign DB > dynamic generator > default)

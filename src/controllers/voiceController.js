@@ -49,10 +49,22 @@ const callEndedWebhook = asyncHandler(async (req, res) => {
 
     // Standard OmniDimension payload properties
     // Adding more variants for IDs and Transcript fields
-    const call_id = req.body.call_id || req.body.id || req.body.dispatch_id || req.body.callLogId;
+    // Webhook Robustness: Support OmniDimension's varied field names for IDs (including camelCase variants)
+    const call_id = req.body.call_id || 
+                    req.body.id || 
+                    req.body.requestId || 
+                    req.body.requestID || 
+                    req.body.dispatch_id || 
+                    req.body.callLogId || 
+                    req.body.request_id || 
+                    req.body.sid ||
+                    (req.body.data && (req.body.data.id || req.body.data.call_id || req.body.data.requestId));
+
     const status = req.body.call_status || req.body.status || 'completed';
-    const phone_number = req.body.to_number || req.body.phone_number || req.body.customer_number; 
+    const phone_number = req.body.to_number || req.body.phone_number || req.body.customer_number || req.body.recipient; 
     
+    logger.info(`[voice:webhook] Received call update. ID Found: ${call_id}, Status: ${status}, Phone: ${phone_number}`);
+
     // OmniDimension nests details in call_report or conversation_details
     const call_report = req.body.call_report || req.body.conversation_details || {};
     const transcriptText = call_report.full_conversation || call_report.transcript || req.body.transcript || req.body.text || '';
@@ -71,34 +83,36 @@ const callEndedWebhook = asyncHandler(async (req, res) => {
     const concatenated_transcript = cleanTranscript;
     const transcript = [{ role: 'system', content: cleanTranscript }];
     
-    const recording_url = req.body.recording_url || call_report.recording_url || req.body.recording || req.body.audio_url;
+    const recording_url = req.body.recording_url || call_report.recording_url || req.body.recording || req.body.audio_url || req.body.recording_link;
     const call_length = req.body.call_duration || req.body.call_length || req.body.duration || call_report.duration || call_report.call_duration;
     const summary = call_report.summary || req.body.summary || req.body.call_summary || call_report.call_summary;
 
     if (!call_id) {
-        logger.warn('[voice:webhook] Received webhook without a valid call_id.');
+        logger.warn('[voice:webhook] Received webhook without a valid call_id. Payload Keys:', Object.keys(req.body).join(', '));
         return res.status(400).json({ error: 'call_id is required' });
     }
 
-    // 1. Try to find the lead by Call ID first
+    // 1. Try to find the lead by Call ID first (Exact match)
     let { lead_id: leadId, campaign_id: campaignId } = await voiceService.getLeadIdForCall(call_id);
     let matchMethod = 'ID';
 
     // 2. FALLBACK: If not found by ID, try looking up by phone number
     if (!leadId && phone_number) {
         logger.info(`[voice:webhook] Match NOT found by ID (${call_id}). Searching by phone: ${phone_number}...`);
+        
+        // Use the specialized phone lookup in voiceService
         leadId = await voiceService.getLeadIdByPhone(phone_number);
         
         if (leadId) {
             matchMethod = 'Phone';
-            logger.info(`[voice:webhook] Found lead ${leadId} by phone number fallback. Repairing record...`);
+            logger.info(`[voice:webhook] Found lead ${leadId} by phone number fallback. Repairing record for ID: ${call_id}...`);
             
-            // Recover recent campaign ID 
+            // Recover recent campaign ID to ensure the conversation timeline is attributed correctly
             const recentCampaignId = await voiceService.getLatestCampaignIdForLead(leadId);
             if (recentCampaignId) campaignId = recentCampaignId;
 
-            // Repair the record so future lookups by ID work
-            await voiceService.createCallRecord(leadId, call_id);
+            // Create the missing call record so future lookups by ID work (idempotency)
+            await voiceService.createCallRecord(leadId, call_id, campaignId);
         }
     }
 

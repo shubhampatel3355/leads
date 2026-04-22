@@ -90,7 +90,7 @@ async function initiateCall(lead, { task, voice = 'maya', firstSentence, campaig
         const { error: insertErr } = await supabase.from('calls').insert({
             lead_id: lead.id,
             external_call_id: String(returnedCallId), // Ensure it's a string for DB
-            campaign_id: campaignId || lead.campaign_id || null,
+            campaign_id: campaignId || lead.campaign_id || null, // PERSIST IMMEDIATELY
             status: 'initiated',
             created_at: new Date().toISOString(),
         });
@@ -99,7 +99,7 @@ async function initiateCall(lead, { task, voice = 'maya', firstSentence, campaig
             logger.error(`[voice:initiate] Failed to insert initial call record for ${returnedCallId}:`, insertErr.message);
         }
 
-        return { call_id: returnedCallId, status: data.status || 'initiated' };
+        return { call_id: returnedCallId, status: data.status || 'initiated', campaign_id: campaignId || lead.campaign_id };
     } catch (err) {
         logger.error(`Voice call failed for lead ${lead.id}:`, err.message);
         throw err;
@@ -181,10 +181,11 @@ async function getLeadIdByPhone(phone) {
 /**
  * Manually create a call record (used by webhook fallback).
  */
-async function createCallRecord(leadId, callId) {
+async function createCallRecord(leadId, callId, campaignId = null) {
     const { error } = await supabase.from('calls').insert({
         lead_id: leadId,
         external_call_id: String(callId),
+        campaign_id: campaignId,
         status: 'initiated',
         created_at: new Date().toISOString(),
     });
@@ -196,13 +197,19 @@ async function createCallRecord(leadId, callId) {
 
 /**
  * Check if a call already exists for a lead (duplicate prevention).
+ * Optionally scope to a specific campaign to allow multiple campaigns to call the same lead.
  */
-async function hasExistingCall(leadId) {
-    const { data } = await supabase
+async function hasExistingCall(leadId, campaignId = null) {
+    let query = supabase
         .from('calls')
         .select('id')
-        .eq('lead_id', leadId)
-        .limit(1);
+        .eq('lead_id', leadId);
+
+    if (campaignId) {
+        query = query.eq('campaign_id', campaignId);
+    }
+
+    const { data } = await query.limit(1);
 
     return data && data.length > 0;
 }

@@ -9,8 +9,18 @@ const { asyncHandler } = require('../middleware/errorHandler');
  * - Recent Qualified Leads
  * - 7-Day Trend Chart Data (Calls & Interactions)
  */
+/**
+ * GET /api/dashboard/stats
+ * comprehensive stats for the dashboard
+ */
+/**
+ * GET /api/dashboard/stats
+ * comprehensive stats for the dashboard
+ */
 const getStats = asyncHandler(async (req, res) => {
     const userId = req.user.id;
+    // Client-side persistence fallback: Accept clearAt as a query param
+    const clearAt = req.query.clearAt || '1970-01-01T00:00:00Z';
 
     // Parallel fetch for metrics
     const [
@@ -23,37 +33,25 @@ const getStats = asyncHandler(async (req, res) => {
         supabase.from('leads').select('*', { count: 'exact', head: true }).eq('user_id', userId).eq('classification', 'warm'),
     ]);
 
-    // For MVP, let's fetch the recent qualified leads
+    // Fetch recent qualified leads (unfiltered)
     const { data: recentQualified } = await supabase
         .from('leads')
         .select('id, name, company, job_title, fit_score, intent_score, status:classification, updated_at')
         .eq('user_id', userId)
         .in('classification', ['hot', 'warm'])
         .order('updated_at', { ascending: false })
-        .limit(5);
+        .limit(8);
 
-    // Activity Feed Aggregation
-    const { data: newLeads } = await supabase
-        .from('leads')
-        .select('id, name, created_at')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false })
-        .limit(5);
-
-    const { data: inboundMessages } = await supabase
-        .from('conversations')
-        .select('id, lead_id, body, created_at, leads!inner(name, user_id)')
-        .eq('leads.user_id', userId)
-        .eq('direction', 'inbound')
-        .order('created_at', { ascending: false })
-        .limit(5);
-
-    const { data: analyses } = await supabase
-        .from('lead_analyses')
-        .select('id, lead_id, result, created_at, leads!inner(name, user_id)')
-        .eq('leads.user_id', userId)
-        .order('created_at', { ascending: false })
-        .limit(5);
+    // Activity Feed Aggregation (FILTERED by clearAt)
+    const [
+        { data: newLeads },
+        { data: inboundMessages },
+        { data: analyses }
+    ] = await Promise.all([
+        supabase.from('leads').select('id, name, created_at').eq('user_id', userId).gt('created_at', clearAt).order('created_at', { ascending: false }).limit(5),
+        supabase.from('conversations').select('id, lead_id, body, created_at, leads!inner(name, user_id)').eq('leads.user_id', userId).eq('direction', 'inbound').gt('created_at', clearAt).order('created_at', { ascending: false }).limit(5),
+        supabase.from('lead_analyses').select('id, lead_id, result, created_at, leads!inner(name, user_id)').eq('leads.user_id', userId).gt('created_at', clearAt).order('created_at', { ascending: false }).limit(5)
+    ]);
 
     const activities = [
         ...(newLeads || []).map(l => ({
@@ -74,16 +72,16 @@ const getStats = asyncHandler(async (req, res) => {
             time: a.created_at,
             lead_id: a.lead_id
         }))
-    ].sort((a, b) => new Date(b.time) - new Date(a.time)).slice(0, 6);
+    ].sort((a, b) => new Date(b.time) - new Date(a.time)).slice(0, 8);
 
-    // Calculate rates
+    // Rate calculations
     const total = totalLeads || 0;
     const hot = hotLeads || 0;
     const warm = warmLeads || 0;
     const conversionRate = total > 0 ? ((hot / total) * 100).toFixed(1) : '0.0';
     const qualificationRate = total > 0 ? (((hot + warm) / total) * 100).toFixed(1) : '0.0';
 
-    // 4. Generate 7-day trend data (Calls & Interactions)
+    // Chart Trend Logic
     const chartData = [];
     const now = new Date();
     for (let i = 6; i >= 0; i--) {
@@ -133,4 +131,13 @@ const getStats = asyncHandler(async (req, res) => {
     });
 });
 
-module.exports = { getStats };
+/**
+ * POST /api/dashboard/clear
+ * Dummy endpoint for success (persistence is handled by client localStorage).
+ */
+const clearActivities = asyncHandler(async (req, res) => {
+    res.json({ message: 'Clear requested', clearedAt: new Date().toISOString() });
+});
+
+module.exports = { getStats, clearActivities };
+

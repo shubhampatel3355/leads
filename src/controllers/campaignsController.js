@@ -5,14 +5,76 @@ const { enqueue } = require('../config/jobQueue');
 // GET /api/campaigns
 async function getCampaigns(req, res) {
     try {
-        const { data, error } = await supabase
+        const { data: campaigns, error } = await supabase
             .from('campaigns')
             .select('*')
             .eq('user_id', req.user.id)
             .order('created_at', { ascending: false });
 
         if (error) throw error;
-        res.json({ campaigns: data });
+
+        // Fetch stats for all campaigns in parallel
+        const enriched = await Promise.all((campaigns || []).map(async (camp) => {
+            try {
+                // Get lead counts directly from leads table using campaign_id column
+                const { data: leads } = await supabase
+                    .from('leads')
+                    .select('id, classification')
+                    .eq('campaign_id', camp.id)
+                    .eq('user_id', req.user.id);
+                
+                // Get call entries to count unique leads and total dials
+                const { data: conversations, error: convErr } = await supabase
+                    .from('conversations')
+                    .select('id, lead_id')
+                    .eq('channel', 'call')
+                    .eq('campaign_id', camp.id);
+                
+                if (convErr) logger.error(`Conversations fetch error for ${camp.id}:`, convErr);
+
+                const totalCalls = conversations?.length || 0;
+                const uniqueLeadsCalled = conversations?.length > 0 
+                  ? new Set(conversations.map(c => c.lead_id).filter(id => !!id)).size 
+                  : 0;
+
+                const { count: callsCompleted } = await supabase
+                    .from('conversations')
+                    .select('*', { count: 'exact', head: true })
+                    .eq('channel', 'call')
+                    .eq('campaign_id', camp.id)
+                    .eq('status', 'completed');
+
+                // Get last call time
+                const { data: lastCall } = await supabase
+                    .from('conversations')
+                    .select('created_at')
+                    .eq('channel', 'call')
+                    .eq('campaign_id', camp.id)
+                    .order('created_at', { ascending: false })
+                    .limit(1)
+                    .maybeSingle();
+
+                const convertedLeads = (leads || []).filter(l => l.classification === 'hot' || l.classification === 'warm').length;
+
+                return {
+                    ...camp,
+                    stats: {
+                        total_leads: leads?.length || 0,
+                        calls_made: totalCalls,
+                        leads_called: uniqueLeadsCalled || (totalCalls > 0 ? 1 : 0), // Fallback to 1 if calls exist but ID mapping failed
+                        calls_completed: callsCompleted || 0,
+                        converted: convertedLeads,
+                        conversion_rate: (leads?.length || 0) > 0 ? Math.round((convertedLeads / leads.length) * 100) : 0,
+                        last_call_at: lastCall?.created_at || null
+                    }
+                };
+            } catch (err) {
+                logger.warn(`Failed to fetch stats for campaign ${camp.id}: ${err.message}`);
+                return camp;
+            }
+        }));
+
+        res.json({ campaigns: enriched });
     } catch (err) {
         logger.error(`Error fetching campaigns: ${err.message}`);
         res.status(500).json({ error: err.message });
