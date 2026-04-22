@@ -109,13 +109,13 @@ async function initiateCall(lead, { task, voice = 'maya', firstSentence, campaig
 /**
  * Store a call transcript from webhook.
  */
-async function storeTranscript(callId, transcript, concatenatedTranscript) {
+async function storeTranscript(callId, transcript, concatenatedTranscript, status = 'completed') {
     const { error } = await supabase
         .from('calls')
         .update({
             transcript: transcript,
             concatenated_transcript: concatenatedTranscript,
-            status: 'completed',
+            status: status,
             completed_at: new Date().toISOString(),
         })
         .eq('external_call_id', callId);
@@ -254,13 +254,13 @@ async function storeCallConversation(leadId, callId, status, extra = {}, campaig
 /**
  * Update an existing call conversation entry with the completed transcript.
  */
-async function updateCallConversationWithTranscript(callId, extra = {}) {
+async function updateCallConversationWithTranscript(callId, extra = {}, status = 'completed') {
     const updateData = {
         body: extra.body || null,
-        status: 'completed',
+        status: status,
         metadata: {
             call_id: callId,
-            status: 'completed',
+            status: status,
             ...(extra.recording_url ? { recording_url: extra.recording_url } : {}),
             ...(extra.call_length ? { call_length: extra.call_length } : {}),
             completed_at: new Date().toISOString(),

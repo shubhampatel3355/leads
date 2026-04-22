@@ -2,16 +2,13 @@ require('dotenv').config({ path: './.env' });
 const supabase = require('./src/config/supabase');
 
 async function cleanupStuckCalls() {
-    const campaignId = '2c60bd65-70ea-4202-b134-ad351b8a16be'; // Targeted campaign from screenshot/logs
-    
-    console.log(`Cleaning up stuck 'initiated' records for campaign: ${campaignId}`);
+    console.log(`Cleaning up ALL stuck 'initiated' records across all campaigns...`);
     
     // 1. Delete from calls table
     const { data: callsData, error: callsError } = await supabase
         .from('calls')
         .delete()
-        .eq('status', 'initiated')
-        .eq('campaign_id', campaignId);
+        .eq('status', 'initiated');
     
     if (callsError) {
         console.error('Error deleting from calls:', callsError.message);
@@ -24,7 +21,6 @@ async function cleanupStuckCalls() {
         .from('conversations')
         .delete()
         .eq('status', 'initiated')
-        .eq('campaign_id', campaignId)
         .eq('channel', 'call');
     
     if (convError) {
