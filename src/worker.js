@@ -57,8 +57,13 @@ async function processOneJob() {
 }
 
 // ─── Poll Loop ────────────────────────────────────────────────
+let consecutiveErrors = 0;
+const MAX_BACKOFF_MS = 60000; // 1 minute max backoff
+
 async function pollLoop() {
     while (running) {
+        let waitTime = POLL_INTERVAL_MS;
+
         try {
             // Try to fill up to CONCURRENCY slots
             const promises = [];
@@ -69,13 +74,26 @@ async function pollLoop() {
 
             // If any job was processed, immediately try again (batch burst)
             const anyProcessed = results.some(r => r === true);
+            
+            // Check for dequeue issues (results might contain false from dequeue errors)
+            // Note: processOneJob returns false if either dequeue fails OR no job found OR concurrency limit reached
+            // We want to detect if dequeue is consistently failing. 
+            // In our updated jobQueue.js, dequeue returns null on fetch error after retries.
+            
+            consecutiveErrors = 0; // Reset on successful poll (even if no job found, it means connectivity is ok)
+
             if (anyProcessed) continue;
         } catch (err) {
-            logger.error(`[worker] Poll loop error:`, err.message);
+            consecutiveErrors++;
+            logger.error(`[worker] Poll loop error (consecutive: ${consecutiveErrors}):`, err.message);
+            
+            // Exponential backoff for network/system errors: 2, 4, 8, 16... seconds
+            waitTime = Math.min(POLL_INTERVAL_MS * Math.pow(2, consecutiveErrors), MAX_BACKOFF_MS);
+            logger.warn(`[worker] Backing off poll for ${waitTime}ms due to errors`);
         }
 
         // Wait before next poll
-        await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+        await new Promise(resolve => setTimeout(resolve, waitTime));
     }
 }
 

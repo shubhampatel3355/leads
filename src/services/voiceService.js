@@ -62,6 +62,11 @@ async function initiateCall(lead, { task, voice = 'maya', firstSentence, campaig
                 'Authorization': `Bearer ${env.omniDimension.apiKey}`,
             },
             body: JSON.stringify(payload),
+        }).catch(err => {
+            // Native fetch error (network level)
+            const isFetchError = err.message?.toLowerCase().includes('fetch failed');
+            logger.error(`[voice:network_error] Failed to reach OmniDimension API: ${err.message}${isFetchError ? ' (Likely DNS or Network issue)' : ''}`);
+            throw new Error(`Connection to OmniDimension failed: ${err.message}`);
         });
 
         if (!response.ok) {
@@ -70,17 +75,14 @@ async function initiateCall(lead, { task, voice = 'maya', firstSentence, campaig
             throw new Error(`OmniDimension AI call failed (${response.status}): ${errBody}`);
         }
 
-        const data = await response.json();
+        const data = await response.json().catch(() => ({}));
         
         // Handle OmniDimension's potentially varied response structure
-        // Added more variants for future-proofing
         const returnedCallId = data.call_id || data.id || data.callLogId || data.dispatch_id || data.requestId ||
                              (data.data && (data.data.id || data.data.call_id || data.data.dispatch_id || data.data.requestId));
         
-        logger.info(`[voice:DEBUG] Dispatch response for lead ${lead.id}:`, JSON.stringify(data));
-
         if (!returnedCallId) {
-            logger.error(`[voice:initiate] OmniDimension responded successfully but no call_id was found.`);
+            logger.error(`[voice:initiate] OmniDimension responded successfully but no call_id was found. Response:`, JSON.stringify(data));
             throw new Error('Failed to retrieve call_id from OmniDimension response');
         }
 
@@ -89,8 +91,8 @@ async function initiateCall(lead, { task, voice = 'maya', firstSentence, campaig
         // Store call record
         const { error: insertErr } = await supabase.from('calls').insert({
             lead_id: lead.id,
-            external_call_id: String(returnedCallId), // Ensure it's a string for DB
-            campaign_id: campaignId || lead.campaign_id || null, // PERSIST IMMEDIATELY
+            external_call_id: String(returnedCallId),
+            campaign_id: campaignId || lead.campaign_id || null, 
             status: 'initiated',
             created_at: new Date().toISOString(),
         });

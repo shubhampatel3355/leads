@@ -151,9 +151,15 @@ const callEndedWebhook = asyncHandler(async (req, res) => {
         await voiceService.storeTranscript(call_id, transcript, concatenated_transcript, internalStatus);
 
         // Update/Store conversation history
+        const statusDetailBody = (internalStatus === 'not_picked') 
+            ? 'AI Voice Call: No answer, busy, or canceled.' 
+            : (internalStatus === 'failed')
+                ? 'AI Voice Call: Failed (Technical error).'
+                : concatenated_transcript;
+
         try {
             const updatedConvo = await voiceService.updateCallConversationWithTranscript(call_id, {
-                body: concatenated_transcript || (internalStatus === 'not_picked' ? 'Call not picked up.' : ''),
+                body: statusDetailBody,
                 recording_url,
                 call_length
             }, internalStatus);
@@ -161,7 +167,7 @@ const callEndedWebhook = asyncHandler(async (req, res) => {
             if (!updatedConvo) {
                 logger.info(`[voice:webhook] Timeline update returned no result for ${call_id}. Attempting fallback creation...`);
                 await voiceService.storeCallConversation(leadId, call_id, internalStatus, {
-                    body: concatenated_transcript || (internalStatus === 'not_picked' ? 'Call not picked up.' : ''),
+                    body: statusDetailBody,
                     recording_url,
                     call_length
                 }, campaignId);
@@ -171,7 +177,7 @@ const callEndedWebhook = asyncHandler(async (req, res) => {
         } catch (err) {
             logger.warn(`[voice:webhook] Timeline update failed, falling back to new record creation: ${err.message}`);
             await voiceService.storeCallConversation(leadId, call_id, internalStatus, {
-                body: concatenated_transcript || (internalStatus === 'not_picked' ? 'Call not picked up.' : ''),
+                body: statusDetailBody,
                 recording_url,
                 call_length
             }, campaignId);

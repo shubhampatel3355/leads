@@ -26,7 +26,7 @@ async function getCampaigns(req, res) {
                 // Get call entries to count unique leads and total dials
                 const { data: conversations, error: convErr } = await supabase
                     .from('conversations')
-                    .select('id, lead_id')
+                    .select('id, lead_id, status')
                     .eq('channel', 'call')
                     .eq('campaign_id', camp.id);
                 
@@ -37,12 +37,8 @@ async function getCampaigns(req, res) {
                   ? new Set(conversations.map(c => c.lead_id).filter(id => !!id)).size 
                   : 0;
 
-                const { count: callsCompleted } = await supabase
-                    .from('conversations')
-                    .select('*', { count: 'exact', head: true })
-                    .eq('channel', 'call')
-                    .eq('campaign_id', camp.id)
-                    .eq('status', 'completed');
+                const callsCompleted = (conversations || []).filter(c => c.status === 'completed').length;
+                const callsInProgress = (conversations || []).filter(c => ['initiated', 'ringing', 'in-progress'].includes(c.status)).length;
 
                 // Get last call time
                 const { data: lastCall } = await supabase
@@ -61,8 +57,9 @@ async function getCampaigns(req, res) {
                     stats: {
                         total_leads: leads?.length || 0,
                         calls_made: totalCalls,
-                        leads_called: uniqueLeadsCalled || (totalCalls > 0 ? 1 : 0), // Fallback to 1 if calls exist but ID mapping failed
+                        leads_called: uniqueLeadsCalled || (totalCalls > 0 ? 1 : 0), 
                         calls_completed: callsCompleted || 0,
+                        calls_in_progress: callsInProgress || 0,
                         converted: convertedLeads,
                         conversion_rate: (leads?.length || 0) > 0 ? Math.round((convertedLeads / leads.length) * 100) : 0,
                         last_call_at: lastCall?.created_at || null
@@ -236,7 +233,102 @@ module.exports = {
     getCampaignCalls,
     getCampaignAnalytics,
     initiateBulkCalls,
+    retryMissedCalls,
 };
+
+// ─── POST /api/campaigns/:id/retry-missed ─────────────────────
+async function retryMissedCalls(req, res) {
+    try {
+        const { id } = req.params;
+
+        // 1. Verify ownership
+        const { data: campaign, error: campErr } = await supabase
+            .from('campaigns')
+            .select('*')
+            .eq('id', id)
+            .eq('user_id', req.user.id)
+            .single();
+
+        if (campErr || !campaign) return res.status(404).json({ error: 'Campaign not found' });
+
+        // 2. Fetch all leads assigned to this campaign
+        const { data: leads, error: leadsErr } = await supabase
+            .from('leads')
+            .select('id, name, phone, company, campaign_leads!inner(campaign_id)')
+            .eq('campaign_leads.campaign_id', id)
+            .eq('user_id', req.user.id)
+            .not('phone', 'is', null);
+
+        if (leadsErr) throw leadsErr;
+
+        const leadIds = leads.map(l => l.id);
+        if (leadIds.length === 0) return res.status(400).json({ error: 'No leads found in this campaign' });
+
+        // 3. Find leads where the LATEST call status was missed/failed
+        const { data: convos } = await supabase
+            .from('conversations')
+            .select('lead_id, status, created_at')
+            .eq('channel', 'call')
+            .eq('campaign_id', id)
+            .in('lead_id', leadIds)
+            .order('created_at', { ascending: false });
+
+        const latestCallStatus = {};
+        (convos || []).forEach(c => {
+            if (!latestCallStatus[c.lead_id]) latestCallStatus[c.lead_id] = c.status;
+        });
+
+        const retryLeads = leads.filter(l => {
+            const status = latestCallStatus[l.id];
+            return status === 'not_picked' || status === 'failed';
+        });
+
+        if (retryLeads.length === 0) {
+            return res.status(400).json({ error: 'No "Not Picked" or "Failed" leads found to retry.' });
+        }
+
+        // 4. Update status and queue in batches
+        const campUpdates = { status: 'running', updated_at: new Date().toISOString() };
+        await supabase
+            .from('campaigns')
+            .update(campUpdates)
+            .eq('id', id);
+
+        let queued = 0;
+        const BATCH_SIZE = 5;
+        const BATCH_INTERVAL_SEC = 30;
+        const startTime = Date.now();
+
+        for (let i = 0; i < retryLeads.length; i++) {
+            const lead = retryLeads[i];
+            const batchNum = Math.floor(i / BATCH_SIZE);
+            const runAt = new Date(startTime + batchNum * BATCH_INTERVAL_SEC * 1000).toISOString();
+
+            try {
+                await enqueue('ai-call-initiate', {
+                    lead_id: lead.id,
+                    phone: lead.phone,
+                    campaign_id: id,
+                    prompt_script: campaign.prompt_script || null,
+                    bypassDuplicateCheck: true, // Allow re-calling same lead
+                }, { runAt });
+                queued++;
+            } catch (qErr) {
+                logger.warn(`Failed to queue retry for lead ${lead.id}: ${qErr.message}`);
+            }
+        }
+
+        logger.info(`Recycle/Retry initiated for ${queued} leads in campaign ${id}`);
+        res.json({
+            success: true,
+            message: `${queued} missed calls re-queued in batches.`,
+            jobs_queued: queued,
+        });
+    } catch (err) {
+        logger.error(`Error retrying missed calls for campaign ${req.params.id}: ${err.message}`);
+        res.status(500).json({ error: err.message });
+    }
+}
 
 // ─── POST /api/campaigns/:id/launch ───────────────────────────
 async function launchCampaign(req, res) {
@@ -270,24 +362,7 @@ async function launchCampaign(req, res) {
             return res.status(400).json({ error: 'No leads with phone numbers assigned to this campaign. Assign leads first.' });
         }
 
-        // Queue one ai-call-initiate job per lead
-        let queued = 0;
-        for (const lead of leads) {
-            try {
-                await enqueue('ai-call-initiate', {
-                    lead_id: lead.id,
-                    phone: lead.phone,
-                    campaign_id: id,
-                    prompt_script: campaign.prompt_script || null,
-                    bypassDuplicateCheck: true,
-                });
-                queued++;
-            } catch (qErr) {
-                logger.warn(`Failed to queue call for lead ${lead.id}: ${qErr.message}`);
-            }
-        }
-
-        // Update campaign status and reset launch timestamp
+        // 1. Update campaign status to running first, so worker doesn't skip jobs
         const now = new Date().toISOString();
         const { error: updateErr } = await supabase
             .from('campaigns')
@@ -299,12 +374,40 @@ async function launchCampaign(req, res) {
             })
             .eq('id', id);
 
-        if (updateErr) logger.warn('Failed to update campaign status to running:', updateErr.message);
+        if (updateErr) {
+            logger.warn('Failed to update campaign status to running before launch:', updateErr.message);
+            throw updateErr;
+        }
 
-        logger.info(`Campaign ${id} launched: ${queued}/${leads.length} jobs queued`);
+        // 2. Queue calls in batches (e.g., 5 leads per 30 seconds)
+        let queued = 0;
+        const BATCH_SIZE = 5;
+        const BATCH_INTERVAL_SEC = 30;
+        const startTime = Date.now();
+
+        for (let i = 0; i < leads.length; i++) {
+            const lead = leads[i];
+            const batchNum = Math.floor(i / BATCH_SIZE);
+            const runAt = new Date(startTime + batchNum * BATCH_INTERVAL_SEC * 1000).toISOString();
+
+            try {
+                await enqueue('ai-call-initiate', {
+                    lead_id: lead.id,
+                    phone: lead.phone,
+                    campaign_id: id,
+                    prompt_script: campaign.prompt_script || null,
+                    bypassDuplicateCheck: true,
+                }, { runAt });
+                queued++;
+            } catch (qErr) {
+                logger.warn(`Failed to queue call for lead ${lead.id}: ${qErr.message}`);
+            }
+        }
+
+        logger.info(`Campaign ${id} launched: ${queued}/${leads.length} jobs queued in batches`);
         res.json({
             success: true,
-            message: `Campaign launched. ${queued} calls queued.`,
+            message: `Campaign launched. ${queued} calls queued in batches.`,
             leads_targeted: leads.length,
             jobs_queued: queued,
         });
@@ -337,15 +440,81 @@ async function pauseCampaign(req, res) {
 async function resumeCampaign(req, res) {
     try {
         const { id } = req.params;
-        const { error } = await supabase
+
+        // 1. Verify ownership and get status
+        const { data: campaign, error: campErr } = await supabase
+            .from('campaigns')
+            .select('*')
+            .eq('id', id)
+            .eq('user_id', req.user.id)
+            .single();
+
+        if (campErr || !campaign) return res.status(404).json({ error: 'Campaign not found' });
+
+        // 2. Fetch all leads assigned to this campaign
+        const { data: leads, error: leadsErr } = await supabase
+            .from('leads')
+            .select('id, name, phone, company, campaign_leads!inner(campaign_id)')
+            .eq('campaign_leads.campaign_id', id)
+            .eq('user_id', req.user.id)
+            .not('phone', 'is', null);
+
+        if (leadsErr) throw leadsErr;
+
+        // 3. Find leads that haven't been called yet for this campaign
+        const { data: convos } = await supabase
+            .from('conversations')
+            .select('lead_id')
+            .eq('channel', 'call')
+            .eq('campaign_id', id);
+
+        const calledLeadIds = new Set((convos || []).map(c => c.lead_id));
+        const uncalledLeads = (leads || []).filter(l => !calledLeadIds.has(l.id));
+
+        // 4. Update campaign status to running first
+        const { error: updateErr } = await supabase
             .from('campaigns')
             .update({ status: 'running', paused_at: null, updated_at: new Date().toISOString() })
             .eq('id', id)
             .eq('user_id', req.user.id);
 
-        if (error) throw error;
-        logger.info(`Campaign ${id} resumed`);
-        res.json({ success: true, status: 'running' });
+        if (updateErr) {
+            logger.warn('Failed to update campaign status to running before resume:', updateErr.message);
+            throw updateErr;
+        }
+
+        // 5. Queue uncalled leads in batches
+        let queued = 0;
+        const BATCH_SIZE = 5;
+        const BATCH_INTERVAL_SEC = 30;
+        const startTime = Date.now();
+
+        for (let i = 0; i < uncalledLeads.length; i++) {
+            const lead = uncalledLeads[i];
+            const batchNum = Math.floor(i / BATCH_SIZE);
+            const runAt = new Date(startTime + batchNum * BATCH_INTERVAL_SEC * 1000).toISOString();
+
+            try {
+                await enqueue('ai-call-initiate', {
+                    lead_id: lead.id,
+                    phone: lead.phone,
+                    campaign_id: id,
+                    prompt_script: campaign.prompt_script || null,
+                    bypassDuplicateCheck: true,
+                }, { runAt });
+                queued++;
+            } catch (qErr) {
+                logger.warn(`Failed to retry call for lead ${lead.id} on resume: ${qErr.message}`);
+            }
+        }
+        
+        logger.info(`Campaign ${id} resumed: ${queued} new calls queued`);
+        res.json({ 
+            success: true, 
+            status: 'running',
+            message: `Campaign resumed. ${queued} calls queued in batches.`,
+            jobs_queued: queued
+        });
     } catch (err) {
         logger.error(`Error resuming campaign ${req.params.id}: ${err.message}`);
         res.status(500).json({ error: err.message });

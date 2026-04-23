@@ -45,24 +45,54 @@ async function enqueue(type, payload, opts = {}) {
  * @returns {object|null} The locked job, or null if none available
  */
 async function dequeue(workerId) {
-    // Use raw SQL for FOR UPDATE SKIP LOCKED — not supported by Supabase client
-    const { data, error } = await supabase.rpc('dequeue_job', {
-        worker_id: workerId,
-    });
+    const MAX_RETRIES = 3;
+    let attempt = 0;
 
-    if (error) {
-        // If RPC doesn't exist yet, log and return null
-        if (error.message.includes('dequeue_job')) {
-            logger.error('[job-queue] dequeue_job RPC not found. Run the jobs migration SQL.');
-        } else {
-            logger.error('[job-queue] Dequeue error:', error.message);
+    while (attempt < MAX_RETRIES) {
+        try {
+            const { data, error } = await supabase.rpc('dequeue_job', {
+                worker_id: workerId,
+            });
+
+            if (error) {
+                // If RPC doesn't exist yet, log and return null immediately (permanent config error)
+                if (error.message?.includes('dequeue_job')) {
+                    logger.error('[job-queue] dequeue_job RPC not found. Run the jobs migration SQL.');
+                    return null;
+                }
+                
+                // If it's a fetch/network error, retry
+                if (error.message?.toLowerCase().includes('fetch failed') || error.status === 0) {
+                    attempt++;
+                    logger.warn(`[job-queue] Dequeue fetch failure (attempt ${attempt}/${MAX_RETRIES}): ${error.message}`);
+                    if (attempt < MAX_RETRIES) {
+                        await new Promise(resolve => setTimeout(resolve, 1000 * attempt)); // Linear backoff
+                        continue;
+                    }
+                }
+
+                logger.error('[job-queue] Dequeue error:', error.message);
+                return null;
+            }
+
+            // rpc returns an array; take first
+            const job = Array.isArray(data) ? data[0] : data;
+            return job || null;
+        } catch (err) {
+            // Handle unexpected exceptions (like TypeError: fetch failed from native fetch)
+            attempt++;
+            if (err.message?.toLowerCase().includes('fetch failed')) {
+                logger.warn(`[job-queue] Dequeue native fetch failure (attempt ${attempt}/${MAX_RETRIES}): ${err.message}`);
+                if (attempt < MAX_RETRIES) {
+                    await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+                    continue;
+                }
+            }
+            logger.error('[job-queue] Dequeue exception:', err.message);
+            return null;
         }
-        return null;
     }
-
-    // rpc returns an array; take first
-    const job = Array.isArray(data) ? data[0] : data;
-    return job || null;
+    return null;
 }
 
 /**

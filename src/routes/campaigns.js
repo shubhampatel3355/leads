@@ -16,6 +16,7 @@ router.delete('/:id', campaignsController.deleteCampaign);
 router.post('/:id/launch', campaignsController.launchCampaign);
 router.post('/:id/pause', campaignsController.pauseCampaign);
 router.post('/:id/resume', campaignsController.resumeCampaign);
+router.post('/:id/retry-missed', campaignsController.retryMissedCalls);
 router.post('/:id/initiate-calls', campaignsController.initiateBulkCalls);
 
 // Data views
