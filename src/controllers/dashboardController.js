@@ -36,7 +36,7 @@ const getStats = asyncHandler(async (req, res) => {
     // Fetch recent qualified leads (unfiltered)
     const { data: recentQualified } = await supabase
         .from('leads')
-        .select('id, name, company, job_title, fit_score, intent_score, status:classification, updated_at')
+        .select('id, name, company, job_title, fit_score, intent_score, final_score, status:classification, updated_at')
         .eq('user_id', userId)
         .in('classification', ['hot', 'warm'])
         .order('updated_at', { ascending: false })

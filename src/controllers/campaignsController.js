@@ -96,8 +96,8 @@ async function getCampaign(req, res) {
         // Fetch stats if needed
         const { count: leadsCount } = await supabase
             .from('leads')
-            .select('*, campaign_leads!inner(campaign_id)', { count: 'exact', head: true })
-            .eq('campaign_leads.campaign_id', id);
+            .select('*', { count: 'exact', head: true })
+            .eq('campaign_id', id);
 
         res.json({ campaign, stats: { leadsCount } });
     } catch (err) {
@@ -254,8 +254,8 @@ async function retryMissedCalls(req, res) {
         // 2. Fetch all leads assigned to this campaign
         const { data: leads, error: leadsErr } = await supabase
             .from('leads')
-            .select('id, name, phone, company, campaign_leads!inner(campaign_id)')
-            .eq('campaign_leads.campaign_id', id)
+            .select('id, name, phone, company, campaign_id')
+            .eq('campaign_id', id)
             .eq('user_id', req.user.id)
             .not('phone', 'is', null);
 
@@ -280,7 +280,7 @@ async function retryMissedCalls(req, res) {
 
         const retryLeads = leads.filter(l => {
             const status = latestCallStatus[l.id];
-            return status === 'not_picked' || status === 'failed';
+            return ['not_picked', 'failed', 'initiated', 'queued'].includes(status);
         });
 
         if (retryLeads.length === 0) {
@@ -351,8 +351,8 @@ async function launchCampaign(req, res) {
         // Fetch all leads assigned to this campaign that have a phone number
         const { data: leads, error: leadsErr } = await supabase
             .from('leads')
-            .select('id, name, phone, company, campaign_leads!inner(campaign_id)')
-            .eq('campaign_leads.campaign_id', id)
+            .select('id, name, phone, company, campaign_id')
+            .eq('campaign_id', id)
             .eq('user_id', req.user.id)
             .not('phone', 'is', null);
 
@@ -454,22 +454,30 @@ async function resumeCampaign(req, res) {
         // 2. Fetch all leads assigned to this campaign
         const { data: leads, error: leadsErr } = await supabase
             .from('leads')
-            .select('id, name, phone, company, campaign_leads!inner(campaign_id)')
-            .eq('campaign_leads.campaign_id', id)
+            .select('id, name, phone, company, campaign_id')
+            .eq('campaign_id', id)
             .eq('user_id', req.user.id)
             .not('phone', 'is', null);
 
         if (leadsErr) throw leadsErr;
 
-        // 3. Find leads that haven't been called yet for this campaign
+        // 3. Find leads that haven't been called yet, or are stuck in 'initiated'/'queued'
         const { data: convos } = await supabase
             .from('conversations')
-            .select('lead_id')
+            .select('lead_id, status, created_at')
             .eq('channel', 'call')
-            .eq('campaign_id', id);
+            .eq('campaign_id', id)
+            .order('created_at', { ascending: false });
 
-        const calledLeadIds = new Set((convos || []).map(c => c.lead_id));
-        const uncalledLeads = (leads || []).filter(l => !calledLeadIds.has(l.id));
+        const latestStatus = {};
+        (convos || []).forEach(c => {
+            if (!latestStatus[c.lead_id]) latestStatus[c.lead_id] = c.status;
+        });
+
+        const uncalledLeads = (leads || []).filter(l => {
+            const status = latestStatus[l.id];
+            return !status || ['initiated', 'queued'].includes(status);
+        });
 
         // 4. Update campaign status to running first
         const { error: updateErr } = await supabase
@@ -534,8 +542,8 @@ async function getCampaignLeads(req, res) {
 
         const { data: leads, error } = await supabase
             .from('leads')
-            .select('id, name, phone, company, industry, classification, fit_score, intent_score, final_score, status, created_at, campaign_leads!inner(campaign_id)')
-            .eq('campaign_leads.campaign_id', id)
+            .select('id, name, phone, company, industry, classification, fit_score, intent_score, final_score, status, created_at, campaign_id')
+            .eq('campaign_id', id)
             .eq('user_id', req.user.id)
             .order('final_score', { ascending: false });
 
@@ -582,8 +590,8 @@ async function getCampaignCalls(req, res) {
         // Get all leads in campaign, then their conversations
         const { data: leads, error: leadsErr } = await supabase
             .from('leads')
-            .select('id, name, phone, company, classification, campaign_leads!inner(campaign_id)')
-            .eq('campaign_leads.campaign_id', id)
+            .select('id, name, phone, company, classification, campaign_id')
+            .eq('campaign_id', id)
             .eq('user_id', req.user.id);
 
         if (leadsErr) throw leadsErr;
@@ -643,8 +651,8 @@ async function getCampaignAnalytics(req, res) {
 
         const { data: leads } = await supabase
             .from('leads')
-            .select('id, classification, fit_score, intent_score, final_score, campaign_leads!inner(campaign_id)')
-            .eq('campaign_leads.campaign_id', id)
+            .select('id, classification, fit_score, intent_score, final_score, campaign_id')
+            .eq('campaign_id', id)
             .eq('user_id', req.user.id);
 
         const leadIds = (leads || []).map(l => l.id);
@@ -673,12 +681,21 @@ async function getCampaignAnalytics(req, res) {
         (analyses || []).forEach(a => {
             try {
                 const result = typeof a.result === 'string' ? JSON.parse(a.result) : a.result;
-                const intent = (result?.buying_intent || '').toLowerCase();
-                if (intent.includes('high') || intent.includes('interested')) intentBreakdown.interested++;
-                else if (intent.includes('low') || intent.includes('not')) intentBreakdown.not_interested++;
-                else if (intent.includes('medium') || intent.includes('callback')) intentBreakdown.callback++;
-                else intentBreakdown.unknown++;
-            } catch { intentBreakdown.unknown++; }
+                const intent = (result?.buying_intent || result?.willingness_to_speak || '').toLowerCase();
+                const score = result?.intent_score || 0;
+                
+                if (intent.includes('high') || intent.includes('interested') || score >= 25) {
+                    intentBreakdown.interested++;
+                } else if (intent.includes('low') || intent.includes('not') || intent.includes('reject') || (score < 10 && score > 0)) {
+                    intentBreakdown.not_interested++;
+                } else if (intent.includes('medium') || intent.includes('callback') || (score >= 10 && score < 25)) {
+                    intentBreakdown.callback++;
+                } else {
+                    intentBreakdown.unknown++;
+                }
+            } catch { 
+                intentBreakdown.unknown++; 
+            }
         });
 
         // Score distribution
@@ -729,8 +746,8 @@ async function initiateBulkCalls(req, res) {
         // Fetch selected leads assigned to this campaign
         const { data: leads, error: leadsErr } = await supabase
             .from('leads')
-            .select('id, name, phone, company, campaign_leads!inner(campaign_id)')
-            .eq('campaign_leads.campaign_id', id)
+            .select('id, name, phone, company, campaign_id')
+            .eq('campaign_id', id)
             .eq('user_id', req.user.id)
             .in('id', leadIds)
             .not('phone', 'is', null);

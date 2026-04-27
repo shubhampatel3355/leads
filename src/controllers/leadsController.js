@@ -129,18 +129,41 @@ const getLeadById = asyncHandler(async (req, res) => {
  * Trigger re-scoring for a lead.
  */
 const rescoreLead = asyncHandler(async (req, res) => {
+    const supabase = require('../config/supabase');
+    const { calculateFitScore, calculateIntentScore, calculateFinalScore } = require('../services/scoringService');
+    
     const lead = await leadService.getLeadById(req.params.id, req.user.id);
 
-    const fitScore = calculateFitScore(lead);
+    // 1. Fetch latest analysis
+    const { data: analysisData } = await supabase
+        .from('lead_analyses')
+        .select('*')
+        .eq('lead_id', lead.id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-    // Queue intent analysis job
-    await enqueue('intent-analysis', {
-        lead_id: lead.id,
-        trigger: 'manual_rescore',
+    // 2. Calculate scores
+    const fitScore = calculateFitScore(lead);
+    const intentScore = analysisData && analysisData.result ? calculateIntentScore(analysisData.result) : 0;
+    const { finalScore, classification } = calculateFinalScore(fitScore, intentScore, analysisData ? analysisData.result : null);
+
+    // 3. Update lead scores in DB
+    await leadService.updateLeadScores(lead.id, {
         fit_score: fitScore,
+        intent_score: intentScore,
+        final_score: finalScore,
+        classification,
     });
 
-    res.json({ message: 'Re-scoring queued', lead_id: lead.id });
+    res.json({ 
+        message: 'Re-scoring completed successfully', 
+        lead_id: lead.id,
+        fit_score: fitScore,
+        intent_score: intentScore,
+        final_score: finalScore,
+        classification 
+    });
 });
 
 /**
@@ -277,26 +300,6 @@ const updateLead = asyncHandler(async (req, res) => {
         .single();
 
     if (error) throw new Error(`Failed to update lead: ${error.message}`);
-
-    // Synchronize many-to-many relationship mapping if campaign_id was updated
-    if (updatedCampaignId !== undefined) {
-        if (updatedCampaignId) {
-            const { error: mappingErr } = await supabase
-                .from('campaign_leads')
-                .upsert(
-                    [{ campaign_id: updatedCampaignId, lead_id: leadId }],
-                    { onConflict: 'campaign_id,lead_id', ignoreDuplicates: true }
-                );
-            if (mappingErr) logger.error(`Failed to map lead ${leadId} to campaign ${updatedCampaignId}: ${mappingErr.message}`);
-        } else {
-             // De-associate if it was cleared out intentionally
-             const { error: clearErr } = await supabase
-                 .from('campaign_leads')
-                 .delete()
-                 .eq('lead_id', leadId);
-             if (clearErr) logger.error(`Failed to clear mappings for lead ${leadId}: ${clearErr.message}`);
-        }
-    }
 
     res.json(data);
 });

@@ -69,19 +69,42 @@ function calculateIntentScore(analysis) {
 // ─── Final Score & Classification ─────────────────────────────
 
 /**
+ * Minimum FIT scores required to hold a given classification.
+ * A lead must meet the profile threshold to be classified at that tier —
+ * even if the AI's call analysis is highly positive.
+ *
+ *  HOT  → fit_score must be ≥ 25  (business email + company, or title present)
+ *  WARM → fit_score must be ≥ 10  (at least a company name on record)
+ *  COLD → no floor (always allowed)
+ */
+const FIT_FLOOR = { hot: 25, warm: 10 };
+
+/**
  * Calculate final score and determine classification.
- * Honors the AI's exact classification if available (honoring its strict Hot Lead Rules).
+ * The AI's classification is respected but capped by the FIT floor:
+ *   - If AI says HOT  but fitScore < 25 → downgrade to WARM
+ *   - If AI says WARM but fitScore < 10 → downgrade to COLD
+ * This prevents low-profile leads from being inflated by call sentiment alone.
  */
 function calculateFinalScore(fitScore, intentScore, aiAnalysis) {
     const finalScore = fitScore + intentScore;
 
     let classification = 'cold';
-    if (aiAnalysis && aiAnalysis.classification) {
-        classification = aiAnalysis.classification.toLowerCase();
-    } else {
-        // Fallback for leads with no AI history
-        if (finalScore >= 70) classification = 'hot';
-        else if (finalScore >= 40) classification = 'warm';
+
+    if (finalScore >= 70) {
+        classification = 'hot';
+    } else if (finalScore >= 40) {
+        classification = 'warm';
+    }
+
+    // Apply fit floors as secondary safeguard
+    if (classification === 'hot' && fitScore < FIT_FLOOR.hot) {
+        classification = 'warm';
+        logger.debug(`FIT floor: Final score indicated hot but fitScore=${fitScore} < ${FIT_FLOOR.hot} → downgraded to warm`);
+    }
+    if (classification === 'warm' && fitScore < FIT_FLOOR.warm) {
+        classification = 'cold';
+        logger.debug(`FIT floor: Final score indicated warm but fitScore=${fitScore} < ${FIT_FLOOR.warm} → downgraded to cold`);
     }
 
     return { finalScore, classification };

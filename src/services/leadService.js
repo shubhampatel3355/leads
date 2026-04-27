@@ -90,20 +90,7 @@ async function processUploadFromStorage(batchId, filePath, filename, userId, cam
                 continue;
             }
 
-            if (data && campaignId) {
-                // Bulk insert into campaign_leads mapping table
-                const mappingBatch = data.map(lead => ({
-                    campaign_id: campaignId,
-                    lead_id: lead.id
-                }));
-                const { error: mappingErr } = await supabase
-                    .from('campaign_leads')
-                    .upsert(mappingBatch, { onConflict: 'campaign_id,lead_id', ignoreDuplicates: true });
-                
-                if (mappingErr) {
-                    logger.error(`[service:lead] Failed to map leads to campaign: ${mappingErr.message}`);
-                }
-            }
+
 
             persistedCount += (data?.length || 0);
         }
@@ -130,8 +117,7 @@ async function getLeads(userId, { page = 1, limit = 20, classification, search, 
 
     if (classification) query = query.eq('classification', classification);
     if (campaign_id) {
-        query = query.select('*, campaigns!fk_leads_campaign(name), campaign_leads!inner(campaign_id)', { count: 'exact' });
-        query = query.eq('campaign_leads.campaign_id', campaign_id);
+        query = query.eq('campaign_id', campaign_id);
     }
     if (search) query = query.or(`name.ilike.%${search}%,company.ilike.%${search}%,email.ilike.%${search}%`);
 
