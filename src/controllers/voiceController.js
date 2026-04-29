@@ -9,7 +9,9 @@ const { asyncHandler } = require('../middleware/errorHandler');
  * Start an OmniDimension AI voice call for a lead.
  */
 const initiateCall = asyncHandler(async (req, res) => {
-    const { lead_id, task, voice, first_sentence } = req.body;
+    const { lead_id, voice } = req.body;
+    const supabase = require('../config/supabase');
+    const { adaptLeadScript } = require('../services/aiService');
 
     if (!lead_id) {
         return res.status(400).json({ error: 'lead_id is required' });
@@ -17,17 +19,108 @@ const initiateCall = asyncHandler(async (req, res) => {
 
     const lead = await leadService.getLeadById(lead_id, req.user.id);
 
+    const effectiveCampaignId = lead.campaign_id;
+    let campaign = null;
+    if (effectiveCampaignId) {
+        const { data } = await supabase
+            .from('campaigns')
+            .select('prompt_script, meta, name')
+            .eq('id', effectiveCampaignId)
+            .single();
+        campaign = data;
+    }
+
+    let personalizedScript = req.body.task || campaign?.prompt_script || '';
+    let scriptPersonalized = false;
+
+    if (lead.linkedin_url || lead.linkedin_data_summary) {
+        try {
+            logger.info(`[controller:calls] Personalizing script for lead ${lead.id} using LinkedIn data`);
+            const adapted = await adaptLeadScript({
+                default_script: personalizedScript,
+                lead_name: lead.name,
+                linkedin_url: lead.linkedin_url,
+                linkedin_data_summary: lead.linkedin_data_summary,
+                job_title: lead.job_title,
+                notes: lead.notes,
+                company: lead.company
+            });
+            
+            if (adapted && adapted !== personalizedScript) {
+                personalizedScript = adapted;
+                scriptPersonalized = true;
+                logger.info(`[controller:calls] Script personalized successfully`);
+            }
+        } catch (err) {
+            logger.warn(`[controller:calls] LinkedIn script personalization failed: ${err.message}`);
+        }
+    }
+
+    let customTask = req.body.task;
+    if (!customTask) {
+        if (campaign) {
+            const meta = campaign.meta || {};
+            const parts = [];
+            
+            parts.push(`# AI PERSONA & MISSION`);
+            parts.push(`You are a highly skilled AI sales representative for the campaign: "${campaign.name}".`);
+            
+            if (meta.tone) parts.push(`**TONE OF VOICE:** ${meta.tone.toUpperCase()}`);
+            if (meta.language) parts.push(`**PRIMARY LANGUAGE:** ${meta.language}`);
+            
+            parts.push(`\n## 1. CONTEXT & OFFERING`);
+            if (meta.selling_context) parts.push(`**What you are selling:**\n${meta.selling_context}`);
+            if (meta.key_value_props) parts.push(`**Key Value Propositions:**\n${meta.key_value_props}`);
+            if (meta.deal_size) parts.push(`**Target Deal Size:** ${meta.deal_size.toUpperCase()}`);
+
+            parts.push(`\n## 2. CAMPAIGN OBJECTIVES`);
+            if (meta.goal) parts.push(`**Your Primary Goal:** ${meta.goal.replace(/_/g, ' ')}`);
+            if (meta.objective) parts.push(`**Campaign Objective:** ${meta.objective.replace(/_/g, ' ')}`);
+            if (meta.conversion_goal) parts.push(`**Conversion Event:** ${meta.conversion_goal.replace(/_/g, ' ')}`);
+
+            parts.push(`\n## 3. PROSPECT INTELLIGENCE (ICP)`);
+            if (meta.icp_details) parts.push(`**Ideal Customer Profile:**\n${meta.icp_details}`);
+            if (meta.lead_warmth) parts.push(`**Lead Warmth Level:** ${meta.lead_warmth.toUpperCase()}`);
+            if (meta.buying_triggers) parts.push(`**Buying Triggers to watch for:**\n${meta.buying_triggers}`);
+            
+            if (meta.objection_tags && meta.objection_tags.length > 0) {
+                parts.push(`\n## 4. OBJECTION HANDLING`);
+                parts.push(`Be prepared to handle these specific objections:\n- ${meta.objection_tags.join('\n- ')}`);
+            }
+
+            parts.push(`\n## 5. BEHAVIORAL GUARDRAILS`);
+            if (meta.guardrails) parts.push(`**Strict Constraints:**\n${meta.guardrails}`);
+            if (meta.escalation_conditions) parts.push(`**Escalate/End call if:**\n${meta.escalation_conditions}`);
+            if (meta.stop_conditions) parts.push(`**Stop calling this lead if:** ${meta.stop_conditions.replace(/_/g, ' ')}`);
+
+            if (personalizedScript) {
+                parts.push(`\n## 6. SPECIFIC SCRIPT & INSTRUCTIONS`);
+                parts.push(personalizedScript);
+            }
+
+            customTask = parts.join('\n');
+        } else if (personalizedScript) {
+            customTask = personalizedScript;
+        }
+    }
+
+    let firstSentence = req.body.first_sentence;
+    if (!firstSentence && personalizedScript) {
+        firstSentence = personalizedScript;
+    }
+
     const result = await voiceService.initiateCall(lead, {
-        task,
+        task: customTask,
         voice,
-        firstSentence: first_sentence,
+        firstSentence: firstSentence,
+        campaignId: effectiveCampaignId,
     });
 
     // Insert conversation timeline entry so webhook can attach the transcript later
     try {
         await voiceService.storeCallConversation(lead.id, result.call_id, 'initiated', {
             body: 'Outbound AI voice call initiated.',
-        });
+        }, effectiveCampaignId);
     } catch (err) {
         logger.warn(`[controller:calls] Failed to store call conversation: ${err.message}`);
     }

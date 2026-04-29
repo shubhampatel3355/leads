@@ -182,22 +182,6 @@ async function handleTranscriptAnalysis(payload) {
         }
     }
 
-    // Auto-trigger AI call when classification changes cold → warm
-    if (previousClassification === 'cold' && classification === 'warm' && lead.phone) {
-        try {
-            const { hasExistingCall } = require('../services/voiceService');
-            const callExists = await hasExistingCall(lead_id);
-            if (!callExists) {
-                await enqueue('ai-call-initiate', { lead_id, phone: lead.phone });
-                logger.info(`[handler:transcript] Queued ai-call-initiate for lead ${lead_id} (cold → warm)`);
-            } else {
-                logger.info(`[handler:transcript] Skipping ai-call-initiate for lead ${lead_id}, call already exists`);
-            }
-        } catch (err) {
-            logger.warn(`[handler:transcript] Failed to queue ai-call-initiate:`, err.message);
-        }
-    }
-
     logger.info(`[handler:transcript] Lead ${lead_id}: ${previousClassification} → ${classification}`);
     return { lead_id, classification, final_score: finalScore };
 }
@@ -242,19 +226,23 @@ async function handleAiCallInitiate(payload) {
         return { skipped: true, reason: 'no_phone' };
     }
 
-    // 3. Check if campaign is paused — skip call if campaign is paused
+    // 2b. Check if lead is assigned to a campaign
     const effectiveCampaignId = campaign_id || lead.campaign_id;
-    if (effectiveCampaignId) {
-        const { data: campaign } = await supabase
-            .from('campaigns')
-            .select('status, prompt_script')
-            .eq('id', effectiveCampaignId)
-            .single();
+    if (!effectiveCampaignId) {
+        logger.info(`[handler:ai-call] Lead ${lead_id} is not assigned to any campaign, skipping call`);
+        return { skipped: true, reason: 'no_campaign_assigned' };
+    }
 
-        if (campaign?.status === 'paused') {
-            logger.info(`[handler:ai-call] Campaign ${effectiveCampaignId} is paused — skipping call for lead ${lead_id}`);
-            return { skipped: true, reason: 'campaign_paused' };
-        }
+    // 3. Check if campaign is running
+    const { data: campaign } = await supabase
+        .from('campaigns')
+        .select('status, prompt_script')
+        .eq('id', effectiveCampaignId)
+        .single();
+
+    if (!campaign || campaign.status !== 'running') {
+        logger.info(`[handler:ai-call] Campaign ${effectiveCampaignId} is not running (status: ${campaign?.status || 'unknown'}) — skipping call for lead ${lead_id}`);
+        return { skipped: true, reason: 'campaign_not_running' };
     }
 
     // 4. Duplicate prevention — skip check if bypass flag is present (manual triggers)
@@ -272,6 +260,10 @@ async function handleAiCallInitiate(payload) {
 
     // 5. Resolve custom prompt (payload > campaign DB > dynamic generator > default)
     let customTask = payloadScript || undefined;
+    const { adaptLeadScript } = require('../services/aiService');
+    let personalizedScript = payloadScript || '';
+    let scriptPersonalized = false;
+
     if (effectiveCampaignId) {
         const { data: campaign } = await supabase
             .from('campaigns')
@@ -281,9 +273,34 @@ async function handleAiCallInitiate(payload) {
 
         if (campaign) {
             const meta = campaign.meta || {};
+            personalizedScript = payloadScript || campaign.prompt_script || '';
+
+            // Apply LinkedIn personalization if data is available
+            if (lead.linkedin_url || lead.linkedin_data_summary) {
+                try {
+                    logger.info(`[handler:ai-call] Personalizing script for lead ${lead_id} using LinkedIn data`);
+                    const adapted = await adaptLeadScript({
+                        default_script: personalizedScript,
+                        lead_name: lead.name,
+                        linkedin_url: lead.linkedin_url,
+                        linkedin_data_summary: lead.linkedin_data_summary,
+                        job_title: lead.job_title,
+                        notes: lead.notes,
+                        company: lead.company
+                    });
+                    
+                    if (adapted && adapted !== personalizedScript) {
+                        personalizedScript = adapted;
+                        scriptPersonalized = true;
+                        logger.info(`[handler:ai-call] Script personalized successfully`);
+                    }
+                } catch (err) {
+                    logger.warn(`[handler:ai-call] LinkedIn script personalization failed: ${err.message}. Using default.`);
+                }
+            }
             
             // Build dynamic persona if internal script is light or missing
-            if (!customTask && (campaign.prompt_script?.trim() || Object.keys(meta).length > 0)) {
+            if (!customTask && (personalizedScript?.trim() || Object.keys(meta).length > 0)) {
                 const parts = [];
                 
                 parts.push(`# AI PERSONA & MISSION`);
@@ -317,9 +334,9 @@ async function handleAiCallInitiate(payload) {
                 if (meta.escalation_conditions) parts.push(`**Escalate/End call if:**\n${meta.escalation_conditions}`);
                 if (meta.stop_conditions) parts.push(`**Stop calling this lead if:** ${meta.stop_conditions.replace(/_/g, ' ')}`);
 
-                if (campaign.prompt_script) {
+                if (personalizedScript) {
                     parts.push(`\n## 6. SPECIFIC SCRIPT & INSTRUCTIONS`);
-                    parts.push(campaign.prompt_script);
+                    parts.push(personalizedScript);
                 }
 
                 customTask = parts.join('\n');
@@ -329,17 +346,9 @@ async function handleAiCallInitiate(payload) {
     }
 
     // 6. Define dynamic opening sentence based on context
-    let firstSentence = payload.first_sentence || undefined;
-    if (!firstSentence && effectiveCampaignId) {
-        const { data: campaign } = await supabase.from('campaigns').select('meta').eq('id', effectiveCampaignId).single();
-        const meta = campaign?.meta || {};
-        
-        if (meta.opening_context === 'standard' || !meta.opening_context) {
-            firstSentence = `Hi ${lead.name}, I'm reaching out regarding your business at ${lead.company || 'your company'}. Do you have a quick moment?`;
-        } else if (meta.opening_context === 'urgent') {
-            firstSentence = `Hi ${lead.name}, I'm calling with a quick update for ${lead.company || 'your business'}. Is now a good time?`;
-        }
-        // ... add more context-based openings here
+    let firstSentence = payload.first_sentence;
+    if (!firstSentence && personalizedScript) {
+        firstSentence = personalizedScript;
     }
 
     // 7. Initiate call via OmniDimension

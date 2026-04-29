@@ -1,9 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const campaignsController = require('../controllers/campaignsController');
+const scriptTestController = require('../controllers/scriptTestController');
 const auth = require('../middleware/auth');
 
 router.use(auth);
+
+// Test route (add before CRUD routes with :id)
+router.post('/test-script', scriptTestController.testScriptProcessor);
 
 // CRUD
 router.get('/', campaignsController.getCampaigns);

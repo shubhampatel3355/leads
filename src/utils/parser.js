@@ -67,6 +67,8 @@ function validateLeadRow(row) {
         location: normalized.location || normalized.city || normalized.country || null,
         source: normalized.source || normalized.lead_source || 'csv_upload',
         notes: normalized.notes || null,
+        linkedin_url: normalized.linkedin_url || normalized.linkedin || null,
+        linkedin_data_summary: normalized.linkedin_data_summary || normalized.linkedin_summary || null,
     };
 }
 

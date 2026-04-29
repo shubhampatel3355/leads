@@ -275,7 +275,7 @@ const updateLead = asyncHandler(async (req, res) => {
     await leadService.getLeadById(leadId, req.user.id);
 
     // Whitelist editable fields
-    const allowed = ['name', 'email', 'phone', 'company', 'industry', 'job_title', 'location', 'source', 'campaign_id', 'classification'];
+    const allowed = ['name', 'email', 'phone', 'company', 'industry', 'job_title', 'location', 'source', 'campaign_id', 'classification', 'linkedin_url', 'linkedin_data_summary'];
     const updates = {};
     for (const key of allowed) {
         if (req.body[key] !== undefined) updates[key] = req.body[key] || null;
@@ -310,7 +310,7 @@ const updateLead = asyncHandler(async (req, res) => {
  */
 const createLead = asyncHandler(async (req, res) => {
     const supabase = require('../config/supabase');
-    const { name, email, phone, company, industry, job_title, location, source } = req.body;
+    const { name, email, phone, company, industry, job_title, location, source, linkedin_url, linkedin_data_summary } = req.body;
 
     if (!name) {
         return res.status(400).json({ error: 'name is required' });
@@ -327,6 +327,8 @@ const createLead = asyncHandler(async (req, res) => {
         job_title: job_title || null,
         location: location || null,
         source: source || 'manual',
+        linkedin_url: linkedin_url || null,
+        linkedin_data_summary: linkedin_data_summary || null,
         classification: 'cold',
         fit_score: 0,
         intent_score: 0,
@@ -346,18 +348,7 @@ const createLead = asyncHandler(async (req, res) => {
         .insert(leadData)
         .select()
         .single();
-
     if (error) throw new Error(`Failed to create lead: ${error.message}`);
-
-    // Automatically trigger an AI call if the lead has a phone number
-    if (leadData.phone) {
-        try {
-            await enqueue('ai-call-initiate', { lead_id: data.id, phone: leadData.phone });
-            logger.info(`Queued initial AI call for new lead ${data.id}`);
-        } catch (err) {
-            logger.warn(`Failed to queue initial AI call for new lead ${data.id}:`, err.message);
-        }
-    }
 
     logger.info(`Created lead ${data.id} (${name}) with fit_score=${leadData.fit_score}`);
     res.status(201).json(data);

@@ -16,6 +16,7 @@ const OpenAI = require('openai');
 const env = require('../config/env');
 const logger = require('../utils/logger');
 const { SYSTEM_PROMPT, buildIntentPrompt, buildTranscriptPrompt } = require('../prompts/intentAnalysis');
+const { SCRIPT_PROCESSOR_SYSTEM_PROMPT, buildScriptPrompt } = require('../prompts/scriptProcessor');
 
 // ─── OpenAI Client (singleton) ────────────────────────────────
 let openaiClient = null;
@@ -59,7 +60,7 @@ const VALID_VALUES = {
  * @param {number} timeoutMs – timeout in milliseconds (default 30s)
  * @returns {{ text: string, usage: object, model: string }}
  */
-async function callModel(model, prompt, timeoutMs = 30000) {
+async function callModel(model, prompt, timeoutMs = 30000, systemPrompt = SYSTEM_PROMPT) {
     const client = getClient();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -69,7 +70,7 @@ async function callModel(model, prompt, timeoutMs = 30000) {
             {
                 model,
                 messages: [
-                    { role: 'system', content: SYSTEM_PROMPT },
+                    { role: 'system', content: systemPrompt },
                     { role: 'user', content: prompt },
                 ],
                 max_tokens: 1024,
@@ -249,6 +250,26 @@ async function runAnalysisPipeline(prompt, leadId) {
     return getDefaultAnalysis();
 }
 
+/**
+ * Adapt lead script based on LinkedIn context.
+ */
+async function adaptLeadScript(inputs) {
+    const prompt = buildScriptPrompt(inputs);
+    const primaryModel = env.openai.primaryModel;
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+            const { text } = await callModel(primaryModel, prompt, 30000, SCRIPT_PROCESSOR_SYSTEM_PROMPT);
+            return text.trim() || inputs.default_script;
+        } catch (err) {
+            logger.error('[ai] Script adaptation failed on attempt ' + attempt + ': ' + err.message);
+            if (attempt < 2) await sleep(1000);
+        }
+    }
+    
+    return inputs.default_script;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────
 
 function sleep(ms) {
@@ -258,6 +279,7 @@ function sleep(ms) {
 module.exports = {
     analyzeIntent,
     analyzeTranscript,
+    adaptLeadScript,
     parseAIResponse,
     validateAnalysis,
     getDefaultAnalysis,
