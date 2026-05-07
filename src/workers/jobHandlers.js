@@ -369,6 +369,48 @@ async function handleAiCallInitiate(payload) {
     return { call_id: result.call_id, lead_id };
 }
 
+// ─── Enrichment Row ───────────────────────────────────────────
+async function handleEnrichmentRow(payload) {
+    const supabase = require('../config/supabase');
+    const { enrichRow } = require('../services/enrichmentService');
+    const { job_id, row_id, company_name, domain, city, person_name, designation } = payload;
+
+    logger.info(`[handler:enrich] Processing row ${row_id} — company: "${company_name}"${person_name ? `, person: "${person_name}"` : ''}`);
+
+    // Mark as processing
+    await supabase.from('enrichment_rows')
+        .update({ status: 'processing' })
+        .eq('id', row_id);
+
+    try {
+        const result = await enrichRow({ company_name, domain, city, person_name, designation });
+
+        await supabase.from('enrichment_rows').update({
+            status: 'success',
+            person_name:      person_name || null,
+            designation:      designation || null,
+            entity_type:      result.entity_type,
+            domain:           result.domain,
+            linkedin_url:     result.linkedin_url,
+            instagram_url:    result.instagram_url,
+            x_url:            result.x_url,
+            youtube_url:      result.youtube_url,
+            facebook_url:     result.facebook_url,
+            confidence_score: result.confidence_score,
+            source:           result.source,
+        }).eq('id', row_id);
+
+        logger.info(`[handler:enrich] ✓ Row ${row_id} done (score: ${result.confidence_score})`);
+        return { row_id, status: 'success', confidence_score: result.confidence_score };
+    } catch (err) {
+        await supabase.from('enrichment_rows').update({
+            status: 'failed',
+            error_message: err.message,
+        }).eq('id', row_id);
+        throw err;
+    }
+}
+
 // ─── Handler Registry ──────────────────────────────────────────
 const handlers = {
     'upload-processing': handleUploadProcessing,
@@ -376,6 +418,7 @@ const handlers = {
     'transcript-analysis': handleTranscriptAnalysis,
     'notification-dispatch': handleNotificationDispatch,
     'ai-call-initiate': handleAiCallInitiate,
+    'enrichment-row': handleEnrichmentRow,
 };
 
 /**

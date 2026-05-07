@@ -41,6 +41,10 @@ module.exports = {
         concurrency: parseInt(process.env.WORKER_CONCURRENCY, 10) || 3,
     },
 
+    serper: {
+        apiKey: process.env.SERPER_API_KEY || null,
+    },
+
     webhookBaseUrl: process.env.WEBHOOK_BASE_URL || `http://localhost:${process.env.PORT || 3000}`,
     frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
     logLevel: process.env.LOG_LEVEL || 'info',

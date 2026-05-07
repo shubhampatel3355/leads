@@ -17,6 +17,7 @@ const voiceRoutes = require('./routes/voice');
 const campaignsRoutes = require('./routes/campaigns');
 const metricsRoutes = require('./routes/metrics');
 const settingsRoutes = require('./routes/settings');
+const enrichmentRoutes = require('./routes/enrichment');
 
 // ─── Express App ──────────────────────────────────────────────
 const app = express();
@@ -77,6 +78,7 @@ app.use('/api/campaigns', campaignsRoutes);
 app.use('/api/metrics', metricsRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/dashboard', require('./routes/dashboard'));
+app.use('/api/enrichment', enrichmentRoutes);
 
 // ─── Admin Routes ─────────────────────────────────────────────
 const { getFailedJobs } = require('./config/jobQueue');
