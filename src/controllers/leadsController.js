@@ -286,10 +286,9 @@ const updateLead = asyncHandler(async (req, res) => {
     }
 
     updates.updated_at = new Date().toISOString();
-    
-    // We retain campaign_id on the leads table for legacy backwards compatibility,
-    // but the actual rendering queries use the `campaign_leads` join table!
-    const updatedCampaignId = updates.campaign_id;
+
+    // Capture whether a campaign is being assigned in this update
+    const incomingCampaignId = updates.campaign_id || null;
 
     const { data, error } = await supabase
         .from('leads')
@@ -300,6 +299,34 @@ const updateLead = asyncHandler(async (req, res) => {
         .single();
 
     if (error) throw new Error(`Failed to update lead: ${error.message}`);
+
+    // ── Auto-trigger call when lead is assigned to a running campaign ──────────
+    // Conditions: campaign_id is being set, lead has a phone, campaign is running
+    if (incomingCampaignId && data.phone) {
+        try {
+            const { data: campaign } = await supabase
+                .from('campaigns')
+                .select('id, status, prompt_script')
+                .eq('id', incomingCampaignId)
+                .eq('user_id', req.user.id)
+                .single();
+
+            if (campaign && campaign.status === 'running') {
+                await enqueue('ai-call-initiate', {
+                    lead_id: leadId,
+                    phone: data.phone,
+                    campaign_id: incomingCampaignId,
+                    prompt_script: campaign.prompt_script || null,
+                    bypassDuplicateCheck: false, // Respect duplicate prevention
+                });
+                logger.info(`[leads] Auto-enqueued call for lead ${leadId} assigned to running campaign ${incomingCampaignId}`);
+            }
+        } catch (qErr) {
+            // Non-fatal — lead was updated successfully; log and continue
+            logger.warn(`[leads] Auto-call enqueue failed for lead ${leadId}: ${qErr.message}`);
+        }
+    }
+    // ──────────────────────────────────────────────────────────────────────────
 
     res.json(data);
 });
